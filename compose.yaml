@@ -1,0 +1,14 @@
+services:
+  frontend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    environment:
+      - VITE_BACKEND_FEATURES=http://localhost:8000/features
+      - VITE_BACKEND_PROCESSES=http://localhost:8000/processes
+      - VITE_BACKEND_DOCU=http://localhost:8000/docs
+    # Optional: override with .env file
+    env_file:
+      - .env
