@@ -398,6 +398,7 @@ const updateSceneOrigin = async (mapInstance: Map, newOrigin: [number, number]):
   // rebuild scene with new origin
   const sceneGroup = scene.getObjectByName('$group')
   if (sceneGroup) {
+    const partyWallsExist = sceneGroup.getObjectByName('party_walls') !== undefined
     while (sceneGroup.children.length > 0) {
       disposeObject(sceneGroup.children[0])
     }
@@ -405,12 +406,7 @@ const updateSceneOrigin = async (mapInstance: Map, newOrigin: [number, number]):
     cjStore.cjFeatures.forEach((feature) => {
       sceneGroup.add(featureGroupToThree(feature, cjStore.cjBase!))
     })
-
-    const partyWallGroup = sceneGroup.getObjectByName('party_walls')
-    if (partyWallGroup) {
-      while (partyWallGroup.children.length > 0) {
-        disposeObject(partyWallGroup.children[0])
-      }
+    if (partyWallsExist) {
 
       const results = jobResultsStore.savedResults
       for (const jobResult of results) {
@@ -424,6 +420,8 @@ const updateSceneOrigin = async (mapInstance: Map, newOrigin: [number, number]):
         }
 
         if (realResult.party_walls && Array.isArray(realResult.party_walls)) {
+          // create new partyWallGroup
+          const partyWallGroup = new THREE.Group()
           for (const partyWall of realResult.party_walls) {
             let boundary: number[][] = partyWall.surface
             if (!boundary || boundary.length < 3) continue
@@ -450,13 +448,17 @@ const updateSceneOrigin = async (mapInstance: Map, newOrigin: [number, number]):
             geometry.computeVertexNormals()
 
             const material = new THREE.MeshPhongMaterial({
-              color: 0xff0000,
+              color: 0xffff00,
               side: THREE.DoubleSide,
+              opacity: 1,
+              transparent: false,
             })
 
             const mesh = new THREE.Mesh(geometry, material)
             partyWallGroup.add(mesh)
           }
+          partyWallGroup.name = 'party_walls'
+          sceneGroup.add(partyWallGroup)
         }
       }
     }
