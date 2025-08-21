@@ -29,13 +29,14 @@
     </div>
 
     <div class="bg-slate-300 p-4 rounded shadow-md mb-4">
-      <h2 class="text-lg font-bold mb-3">Global Opacity</h2>
+      <h2 class="text-lg font-bold mb-3">Global Opacity (Maximum)</h2>
       <div class="flex items-center">
         <span class="text-sm font-medium w-6">A:</span>
         <input type="range" min="0" max="1" step="0.01" v-model.number="store.defaultOpacity"
           @input="updateDefaultOpacity" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
         <span class="ml-2 text-sm w-12">{{ Math.round(store.defaultOpacity * 100) }}%</span>
       </div>
+      <div class="text-xs text-gray-600 mt-1">Each surface's opacity cannot exceed this value.</div>
     </div>
 
     <div class="bg-slate-300 p-4 rounded shadow-md mb-4">
@@ -112,7 +113,8 @@
 
           <div class="flex items-center">
             <span class="text-sm font-medium w-6">A:</span>
-            <input type="range" min="0" max="1" step="0.01" :value="store.defaultOpacity" @input="updateDefaultOpacity"
+            <input type="range" min="0" :max="store.defaultOpacity" step="0.01" v-model.number="color.a"
+              @input="updateColor(surface, color)"
               class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
             <span class="ml-2 text-sm w-12">{{ Math.round(color.a * 100) }}%</span>
           </div>
@@ -158,7 +160,15 @@ const updateColor = (surface: string, color: RGBAColor): void => {
 
 const updateDefaultOpacity = (event: Event): void => {
   const target = event.target as HTMLInputElement
-  store.setDefaultOpacity(parseFloat(target.value))
+  const newMax = parseFloat(target.value)
+  store.setDefaultOpacity(newMax)
+  // Clamp all surface opacities to the new maximum
+  Object.entries(store.semanticSurfaces).forEach(([surface, color]) => {
+    if (color.a > newMax) {
+      color.a = newMax
+      store.updateColor(surface, color)
+    }
+  })
 }
 
 const addSurface = (): void => {
