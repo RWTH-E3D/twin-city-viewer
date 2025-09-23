@@ -1,6 +1,6 @@
 # TwinCityViewer
 
-TwinCityViewer is a web-based visualization and editing tool for 3D city models in the [CityJSONSeq format](https://www.cityjson.org/cityjsonseq/). It provides an intuitive interface for working with district-scale urban digital twins, supporting both visualization and interactive editing capabilities.  While it can work with any OGC API Features compliant endpoint, it is designed to work seamlessly with [TwinCityAPI](https://github.com/RWTH-E3D/twin-city-api) for enhanced functionality.
+TwinCityViewer is a web-based visualization and editing tool for 3D city models in the [CityJSONSeq format](https://www.cityjson.org/cityjsonseq/). It provides an intuitive interface for working with district-scale urban digital twins, supporting both visualization and interactive editing capabilities. While it can work with any OGC API Features compliant endpoint, it is designed to work seamlessly with [TwinCityAPI](https://github.com/RWTH-E3D/twin-city-api) for enhanced functionality.
 
 ## Key Features
 
@@ -11,6 +11,10 @@ TwinCityViewer is a web-based visualization and editing tool for 3D city models 
 - Compatible with any OGC API Features compliant endpoint
 - Local file saving and loading capabilities
 
+## License
+
+Available under the Apache 2.0 [License](License.md).
+See the _Cite this repository_ function or the [CITATION.cff](CITATION.cff) for citation of this repository.
 
 ## Customize configuration
 
@@ -18,7 +22,7 @@ See [Vite Configuration Reference](https://vitejs.dev/config/).
 
 ## Project Setup
 
-Make sure to create a .env file if you are not using the docker image based on 
+Make sure to create a .env file if you are not using the docker image based on
 the [examle](sample.env)
 
 ```sh
