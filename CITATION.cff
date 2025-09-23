@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: 'If you use this software, please cite it as below.'
+type: conference-paper
+title: 'TwinCity3000: A Tale of Twin Cities'
+authors:
+  - family-names: Raming
+    given-names: Simon
+  - family-names: Shamovich
+    given-names: Maxim
+  - family-names: Frisch
+    given-names: Jérôme
+  - family-names: Van Treeck
+    given-names: Christoph
+year: 2025
+doi: 10.26868/25222708.2025.1437
+conference:
+  name: 'Building Simulation 2025'
+languages:
+  - en
+preferred-citation:
+  type: conference-paper
+  authors:
+    - family-names: Raming
+      given-names: Simon
+    - family-names: Shamovich
+      given-names: Maxim
+    - family-names: Frisch
+      given-names: Jérôme
+    - family-names: Van Treeck
+      given-names: Christoph
+  title: 'TwinCity3000: A Tale of Twin Cities'
+  year: 2025
+  conference:
+    name: 'Building Simulation 2025'
+  doi: 10.26868/25222708.2025.1437
+  languages:
+    - en
