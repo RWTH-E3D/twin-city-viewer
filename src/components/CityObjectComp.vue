@@ -105,18 +105,56 @@
       </div>
 
       <CityObjectCoor :cityObject="cityObject" :translatedVerts="translatedVerts" />
+
+      <!-- Process Results Section -->
+      <div v-if="processResultsForObject.length" class="mt-4">
+        <h5 class="mb-2">Process Results</h5>
+        <div v-for="proc in processResultsForObject" :key="proc.jobId" class="mb-2 p-2 bg-gray-50 rounded">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">Process {{ proc.jobId.slice(-4) }}</span>
+            <span class="text-xs text-gray-500">Sum: {{ proc.sum.toLocaleString(undefined, { maximumFractionDigits: 2 })
+            }}</span>
+            <label class="ml-2 text-xs flex items-center gap-1">
+              <input type="checkbox" v-model="proc.visible" /> Show in graph
+            </label>
+          </div>
+        </div>
+        <div v-if="anyProcessVisible" class="mt-4">
+          <div style="width:100%; max-height:40vh;">
+            <LineChart :chart-data="chartData" :chart-options="chartOptions" style="width:100%; height:40vh;" />
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+// @ts-ignore
+// @ts-ignore
+import { Line } from 'vue-chartjs'
+// @ts-ignore
+import {
+  Chart as ChartJS,
+  Title,
+  Tooltip,
+  Legend,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale,
+} from 'chart.js'
+import { defineComponent, h } from 'vue'
+ChartJS.register(Title, Tooltip, Legend, LineElement, PointElement, CategoryScale, LinearScale)
 import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import CityObjectCoor from './CityObjectGeom.vue'
 
+
 import { multiSelStore } from '@/stores/selectionStore'
 import { useMapStore } from '@/stores/mapStore'
+import { useJobResultsStore } from '@/stores/jobResultsStore'
 
 import type { CityObject, CityJSONDocument } from '@/types/cityjson'
 import type { Vertices } from '@/types/cityjson'
@@ -124,6 +162,7 @@ import type { Vertices } from '@/types/cityjson'
 const route = useRoute()
 const mSelStore = multiSelStore()
 const mapStore = useMapStore()
+
 
 const props = defineProps<{
   cityObject: CityObject
@@ -133,6 +172,140 @@ const props = defineProps<{
   cjBase: CityJSONDocument
   closeFct: () => void
 }>()
+const jobResultsStore = useJobResultsStore()
+
+// --- Process Results for this object ---
+interface ProcResultLine {
+  jobId: string
+  sum: number
+  raw_values: number[]
+  visible: boolean
+}
+
+const processResultsForObject = ref<ProcResultLine[]>([])
+
+// On mount or when jobResultsStore.savedResults or cityObjectID changes, update processResultsForObject
+watch(
+  [() => jobResultsStore.savedResults, () => props.cityObjectID],
+  () => {
+    const results: ProcResultLine[] = []
+    for (const jobResult of jobResultsStore.savedResults) {
+      const jobId = jobResult.jobId || ''
+      const proc = jobResult.results?.result
+      if (proc && proc.building_results && proc.building_results[props.cityObjectID]) {
+        const bres = proc.building_results[props.cityObjectID]
+        if (bres && typeof bres === 'object' && Array.isArray(bres.raw_values) && typeof bres.sum === 'number') {
+          results.push({
+            jobId,
+            sum: bres.sum,
+            raw_values: bres.raw_values,
+            visible: true,
+          })
+        }
+      }
+    }
+    processResultsForObject.value = results
+  },
+  { immediate: true, deep: true }
+)
+
+
+
+// Chart.js integration
+const colors = [
+  '#2563eb', // blue-600
+  '#16a34a', // green-600
+  '#f59e42', // orange-400
+  '#dc2626', // red-600
+  '#7c3aed', // purple-600
+  '#eab308', // yellow-500
+  '#0ea5e9', // sky-500
+  '#f43f5e', // pink-500
+]
+
+// Month labels for 365 days (approximate, not leap year aware)
+const monthLabels = (() => {
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ]
+  // Days per month (non-leap year)
+  const daysPerMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  let labels: string[] = []
+  for (let m = 0; m < 12; m++) {
+    for (let d = 1; d <= daysPerMonth[m]; d++) {
+      labels.push(months[m])
+    }
+  }
+  return labels.slice(0, 365)
+})()
+
+const anyProcessVisible = computed(() => processResultsForObject.value.some(p => p.visible))
+
+const chartData = computed(() => {
+  const datasets = processResultsForObject.value
+    .filter(p => p.visible)
+    .map((p, i) => ({
+      label: `Proc ${p.jobId.slice(-4)}`,
+      data: p.raw_values.slice(0, 365),
+      borderColor: colors[i % colors.length],
+      backgroundColor: colors[i % colors.length] + '33',
+      fill: false,
+      tension: 0.2,
+      pointRadius: 0,
+    }))
+  return {
+    labels: monthLabels,
+    datasets,
+  }
+})
+
+
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: true },
+    title: { display: true, text: 'Daily Values' },
+    tooltip: { mode: 'index', intersect: false },
+  },
+  scales: {
+    x: {
+      title: { display: true, text: 'Month' },
+      ticks: {
+        callback: function (value: number, index: number, values: any) {
+          // Only show month label at the first day of each month
+          if (index === 0) return 'Jan'
+          const monthStartDays = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+          const found = monthStartDays.indexOf(index)
+          if (found !== -1) return monthNames[found]
+          return ''
+        },
+        maxRotation: 0,
+        minRotation: 0,
+        autoSkip: false,
+        font: { size: 12 },
+      },
+    },
+    y: { title: { display: true, text: 'Heating Load' } },
+  },
+}
+
+// Chart component
+const LineChart = defineComponent({
+  name: 'LineChart',
+  props: {
+    chartData: Object as () => any,
+    chartOptions: Object as () => any
+  },
+  components: { Line },
+  setup(props) {
+    return () => props.chartData && props.chartOptions
+      ? h(Line, { data: props.chartData as any, options: props.chartOptions as any })
+      : null
+  },
+})
 
 const emit = defineEmits<{
   (e: 'update:featVert', vertices: Vertices): void

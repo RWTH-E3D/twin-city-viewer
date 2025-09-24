@@ -89,6 +89,27 @@ const currentParameterRange: Ref<{ min: number | null; max: number | null }> = r
   max: null,
 })
 
+// Map of process sum values for each process result, keyed by jobId
+const processSumMaps = computed(() => {
+  const maps: Record<string, Record<string, number>> = {}
+  for (const jobResult of jobResultsStore.savedResults) {
+    const jobId = jobResult.jobId || ''
+    const result = jobResult.results?.result
+    if (result && result.building_results) {
+      const sumMap: Record<string, number> = {}
+      for (const [bid, bres] of Object.entries(result.building_results)) {
+        if (bres && typeof bres === 'object' && 'sum' in bres && typeof bres.sum === 'number') {
+          sumMap[bid] = bres.sum
+        }
+      }
+      if (Object.keys(sumMap).length > 0 && jobId) {
+        maps[jobId] = sumMap
+      }
+    }
+  }
+  return maps
+})
+
 const discoverAvailableParameters = (): void => {
   const parameters = new Set<string>()
   for (const feature of cjStore.cjFeatures) {
@@ -102,7 +123,13 @@ const discoverAvailableParameters = (): void => {
       }
     }
   }
-  availableParameters.value = ['None', ...Array.from(parameters)]
+  // Add process sum options
+  const processOptions: string[] = []
+  for (const jobId of Object.keys(processSumMaps.value)) {
+    const suffix = jobId.slice(-4)
+    processOptions.push(`Process Sum (${suffix})`)
+  }
+  availableParameters.value = ['None', ...Array.from(parameters), ...processOptions]
 }
 
 const calculateParameterRange = (parameterName: string): void => {
@@ -114,6 +141,30 @@ const calculateParameterRange = (parameterName: string): void => {
     return
   }
 
+  // Check if this is a process sum parameter
+  const processSumMatch = parameterName.match(/^Process Sum \((\w{4})\)$/)
+  if (processSumMatch) {
+    // Find the jobId ending with these 4 chars
+    const suffix = processSumMatch[1]
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix))
+    if (jobId) {
+      const sumMap = processSumMaps.value[jobId]
+      for (const feature of cjStore.cjFeatures) {
+        if (sumMap[feature.id] !== undefined) {
+          const value = sumMap[feature.id]
+          if (!isNaN(value)) {
+            min = Math.min(min, value)
+            max = Math.max(max, value)
+          }
+        }
+      }
+    }
+    currentParameterRange.value =
+      min !== Infinity && max !== -Infinity ? { min, max } : { min: 0, max: 100 }
+    return
+  }
+
+  // Default: attribute
   for (const feature of cjStore.cjFeatures) {
     for (const cityObject of Object.values(feature.CityObjects)) {
       if (cityObject.attributes && parameterName in cityObject.attributes) {
@@ -148,6 +199,21 @@ const getParameterColor = (value: number | null): THREE.Color | null => {
   return new THREE.Color().setHSL(hue / 360, 0.8, 0.5)
 }
 
+// Helper to get process sum value for a feature id, if selectedParameter is a process sum
+const getProcessSumForFeature = (featureId: string): number | null => {
+  const processSumMatch = selectedParameter.value.match(/^Process Sum \((\w{4})\)$/)
+  if (processSumMatch) {
+    const suffix = processSumMatch[1]
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix))
+    if (jobId) {
+      const sumMap = processSumMaps.value[jobId]
+      if (sumMap && sumMap[featureId] !== undefined) {
+        return sumMap[featureId]
+      }
+    }
+  }
+  return null
+}
 const changeMapOperation = (): void => {
   if (!map) return
 
@@ -490,6 +556,18 @@ const featureGroupToThree = (feature: CityJSONFeature, cjBase: CityJSONDocument)
     objGroup.name = 'obj_' + id
     const isSelected = isFeatureSelected && mSelStore.selFeatures[feature.id].includes(id)
 
+    // Check if geometry exists and is an array
+    if (!cityObject.geometry || !Array.isArray(cityObject.geometry)) {
+      console.warn(`CityObject ${id} has invalid geometry:`, cityObject.geometry)
+      continue
+    }
+
+    // Skip objects with empty geometry arrays
+    if (cityObject.geometry.length === 0) {
+      // This is normal for parent objects like Building that have child BuildingParts
+      continue
+    }
+
     for (const geometry of cityObject.geometry) {
       const geometryGroup = new THREE.Group()
       geometryGroup.name = 'geom_' + geometry.type
@@ -560,12 +638,12 @@ const featureGroupToThree = (feature: CityJSONFeature, cjBase: CityJSONDocument)
         }
         case 'MultiSurface':
         case 'CompositeSurface':
-          processSurfaceGeometry(geometry, vertices, geometryGroup, isSelected, cityObject)
+          processSurfaceGeometry(geometry, vertices, geometryGroup, isSelected, cityObject, feature.id)
           break
         case 'Solid':
         case 'MultiSolid':
         case 'CompositeSolid':
-          processSolidGeometry(geometry, vertices, geometryGroup, isSelected, cityObject)
+          processSolidGeometry(geometry, vertices, geometryGroup, isSelected, cityObject, feature.id)
           break
       }
       objGroup.add(geometryGroup)
@@ -581,6 +659,7 @@ const processSurfaceGeometry = (
   group: THREE.Group,
   isSelected: boolean,
   cityObject: CityObject | null = null,
+  featureId?: string,
 ): void => {
   geometry.boundaries.forEach((surface, surfaceI) => {
     const exteriorRing = surface[0]
@@ -599,6 +678,7 @@ const processSurfaceGeometry = (
       semanticInfo,
       isSelected,
       cityObject,
+      featureId,
     )
     if (mesh) group.add(mesh)
   })
@@ -610,6 +690,7 @@ const processSolidGeometry = (
   group: THREE.Group,
   isSelected: boolean,
   cityObject: CityObject | null = null,
+  featureId?: string,
 ): void => {
   const solids: Shell[] =
     geometry.type === 'Solid'
@@ -632,6 +713,7 @@ const processSolidGeometry = (
         semanticInfo,
         isSelected,
         cityObject,
+        featureId,
       )
 
       if (mesh) group.add(mesh)
@@ -646,6 +728,7 @@ const createGeometryMesh = (
   semanticInfo: SemanticInfo,
   isSelected: boolean,
   cityObject: CityObject | null,
+  featureId?: string,
 ): THREE.Mesh | null => {
   const indices = triangulatePolygon(boundary, vertices)
   if (indices.length === 0) return null
@@ -659,7 +742,20 @@ const createGeometryMesh = (
   let opacity: number = semanticColorsStore.defaultOpacity
   let useParameterColoring = false
 
-  if (
+  // Check for process sum coloring
+  if (selectedParameter.value.startsWith('Process Sum')) {
+    if (featureId) {
+      const sumValue = getProcessSumForFeature(featureId)
+      if (sumValue !== null) {
+        const paramColor = getParameterColor(sumValue)
+        if (paramColor) {
+          color = paramColor
+          opacity = 0.9
+          useParameterColoring = true
+        }
+      }
+    }
+  } else if (
     selectedParameter.value !== 'None' &&
     cityObject?.attributes?.[selectedParameter.value] !== undefined
   ) {
