@@ -104,7 +104,17 @@
         </div>
       </div>
 
-      <CityObjectCoor :cityObject="cityObject" :translatedVerts="translatedVerts" />
+      <!-- Geometry Section -->
+      <div class="mt-2">
+        <button @click="showGeometry = !showGeometry"
+          class="mb-2 px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm font-medium flex items-center gap-2">
+          <span>{{ showGeometry ? 'Hide' : 'Show' }} Geometry</span>
+          <span class="text-xs">{{ showGeometry ? '▼' : '▶' }}</span>
+        </button>
+        <div v-show="showGeometry">
+          <CityObjectCoor :cityObject="cityObject" :translatedVerts="translatedVerts" />
+        </div>
+      </div>
 
       <!-- Process Results Section -->
       <div v-if="processResultsForObject.length" class="mt-4">
@@ -318,6 +328,7 @@ const centerPoint = ref<[number, number, number]>([0, 0, 0])
 const originalVerts = ref<number[][]>([])
 const translatedVerts = ref<number[][]>([])
 const showTransformControls = ref(false)
+const showGeometry = ref(false)
 const newAttributeName = ref('')
 const newAttributeValue = ref('')
 
