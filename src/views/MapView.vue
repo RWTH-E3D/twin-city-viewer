@@ -17,6 +17,7 @@ import { useCjStore } from '@/stores/cjStore'
 import { singleSelStore, multiSelStore } from '@/stores/selectionStore'
 import { useMapStore, useSemanticColorsStore } from '@/stores/mapStore'
 import { useJobResultsStore } from '@/stores/jobResultsStore'
+import { useAdditionalInfoStore } from '@/stores/additionalInfoStore'
 
 import type { CityJSONFeature, CityObject, CityJSONDocument, RoofType } from '@/types/cityjson'
 import type {
@@ -49,6 +50,7 @@ const sSelStore = singleSelStore()
 const mSelStore = multiSelStore()
 const mapStore = useMapStore()
 const jobResultsStore = useJobResultsStore()
+const additionalInfoStore = useAdditionalInfoStore()
 
 const isMounted = ref<boolean>(false)
 const isInitialized = ref<boolean>(false)
@@ -123,13 +125,32 @@ const discoverAvailableParameters = (): void => {
       }
     }
   }
+
   // Add process sum options
   const processOptions: string[] = []
   for (const jobId of Object.keys(processSumMaps.value)) {
     const suffix = jobId.slice(-4)
     processOptions.push(`Process Sum (${suffix})`)
   }
-  availableParameters.value = ['None', ...Array.from(parameters), ...processOptions]
+
+  // Add additional info parameters
+  const additionalInfoParameters = new Set<string>()
+  for (const featureInfo of additionalInfoStore.getAllFeaturesInfo) {
+    if (featureInfo.properties) {
+      for (const [key, value] of Object.entries(featureInfo.properties)) {
+        if (typeof value === 'number' && !isNaN(value)) {
+          additionalInfoParameters.add(`Additional: ${key}`)
+        }
+      }
+    }
+  }
+
+  availableParameters.value = [
+    'None',
+    ...Array.from(parameters),
+    ...processOptions,
+    ...Array.from(additionalInfoParameters)
+  ]
 }
 
 const calculateParameterRange = (parameterName: string): void => {
@@ -156,6 +177,25 @@ const calculateParameterRange = (parameterName: string): void => {
             min = Math.min(min, value)
             max = Math.max(max, value)
           }
+        }
+      }
+    }
+    currentParameterRange.value =
+      min !== Infinity && max !== -Infinity ? { min, max } : { min: 0, max: 100 }
+    return
+  }
+
+  // Check if this is an additional info parameter
+  const additionalInfoMatch = parameterName.match(/^Additional: (.+)$/)
+  if (additionalInfoMatch) {
+    const propertyName = additionalInfoMatch[1]
+    for (const feature of cjStore.cjFeatures) {
+      const additionalInfo = additionalInfoStore.getFeatureInfo(feature.id)
+      if (additionalInfo?.properties && propertyName in additionalInfo.properties) {
+        const value = additionalInfo.properties[propertyName]
+        if (typeof value === 'number' && !isNaN(value)) {
+          min = Math.min(min, value)
+          max = Math.max(max, value)
         }
       }
     }
@@ -209,6 +249,22 @@ const getProcessSumForFeature = (featureId: string): number | null => {
       const sumMap = processSumMaps.value[jobId]
       if (sumMap && sumMap[featureId] !== undefined) {
         return sumMap[featureId]
+      }
+    }
+  }
+  return null
+}
+
+// Helper to get additional info value for a feature id, if selectedParameter is an additional info parameter
+const getAdditionalInfoForFeature = (featureId: string): number | null => {
+  const additionalInfoMatch = selectedParameter.value.match(/^Additional: (.+)$/)
+  if (additionalInfoMatch) {
+    const propertyName = additionalInfoMatch[1]
+    const additionalInfo = additionalInfoStore.getFeatureInfo(featureId)
+    if (additionalInfo?.properties && propertyName in additionalInfo.properties) {
+      const value = additionalInfo.properties[propertyName]
+      if (typeof value === 'number' && !isNaN(value)) {
+        return value
       }
     }
   }
@@ -748,6 +804,18 @@ const createGeometryMesh = (
       const sumValue = getProcessSumForFeature(featureId)
       if (sumValue !== null) {
         const paramColor = getParameterColor(sumValue)
+        if (paramColor) {
+          color = paramColor
+          opacity = 0.9
+          useParameterColoring = true
+        }
+      }
+    }
+  } else if (selectedParameter.value.startsWith('Additional:')) {
+    if (featureId) {
+      const additionalValue = getAdditionalInfoForFeature(featureId)
+      if (additionalValue !== null) {
+        const paramColor = getParameterColor(additionalValue)
         if (paramColor) {
           color = paramColor
           opacity = 0.9
@@ -1390,6 +1458,17 @@ const setupWatchers = (): void => {
       })
     },
     { immediate: true },
+  )
+
+  // Watch for changes in additional info to update available parameters
+  watch(
+    () => additionalInfoStore.featuresInfo.size,
+    () => {
+      if (isInitialized.value && cjStore.cjFeatures.length > 0) {
+        discoverAvailableParameters()
+      }
+    },
+    { immediate: false }
   )
 }
 
