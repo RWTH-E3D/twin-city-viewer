@@ -5,6 +5,7 @@ import { v5 as uuidv5 } from 'uuid'
 import { useCjStore } from '@/stores/cjStore'
 import { useNotificationStore } from '@/stores/notificationStore'
 import { useMapStore } from '@/stores/mapStore'
+import { useAdditionalInfoStore } from '@/stores/additionalInfoStore'
 
 import { validateUrl, loadDataFromApi, fetchCollections, calculateBbox } from '@/utils/apiUtils'
 import {
@@ -27,6 +28,7 @@ const STORAGE_KEY = 'cityjson-settings'
 const cjStore = useCjStore()
 const notificationStore = useNotificationStore()
 const mapStore = useMapStore()
+const additionalInfoStore = useAdditionalInfoStore()
 
 const apiUrl = ref<string>(import.meta.env.VITE_BACKEND_FEATURES || '')
 const collections = ref<ApiCollection[]>([])
@@ -37,6 +39,15 @@ const limit = ref<number>(1000)
 const offset = ref<number>(0)
 const queryParams = ref<string>('')
 const dragActive = ref<boolean>(false)
+
+// Second API for additional information
+const additionalApiUrl = ref<string>('')
+const additionalCollections = ref<ApiCollection[]>([])
+const additionalIsLoading = ref<boolean>(false)
+const additionalError = ref<string | null>(null)
+const additionalSuccessMessage = ref<string>('')
+const selectedAdditionalCollection = ref<ApiCollection | null>(null)
+const additionalQueryParams = ref<string>('')
 
 const handleDragEnter = (e: DragEvent): void => {
   e.preventDefault()
@@ -118,6 +129,9 @@ const saveSettings = (): void => {
     limit: limit.value,
     offset: offset.value,
     queryParams: queryParams.value,
+    additionalApiUrl: additionalApiUrl.value,
+    selectedAdditionalCollection: selectedAdditionalCollection.value?.id || null,
+    additionalQueryParams: additionalQueryParams.value,
   }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
 }
@@ -173,6 +187,84 @@ const handleLimitChange = (): void => {
 
 const handleOffsetChange = (): void => {
   if (offset.value < 0) offset.value = 0
+}
+
+const loadSettings = (): void => {
+  const saved = localStorage.getItem(STORAGE_KEY)
+  if (saved) {
+    try {
+      const settings = JSON.parse(saved)
+      if (settings.apiUrl) apiUrl.value = settings.apiUrl
+      if (settings.limit) limit.value = settings.limit
+      if (settings.offset) offset.value = settings.offset
+      if (settings.queryParams) queryParams.value = settings.queryParams
+      if (settings.additionalApiUrl) additionalApiUrl.value = settings.additionalApiUrl
+      if (settings.additionalQueryParams) additionalQueryParams.value = settings.additionalQueryParams
+    } catch (error) {
+      console.warn('Failed to load settings from localStorage:', error)
+    }
+  }
+}
+
+// Load settings on component mount
+loadSettings()
+
+// Additional API functions
+const handleAdditionalApiUrlInput = async (): Promise<void> => {
+  if (validateUrl(additionalApiUrl.value)) {
+    additionalIsLoading.value = true
+    additionalError.value = null
+    try {
+      additionalApiUrl.value = additionalApiUrl.value.trim().replace(/\/$/, '')
+      additionalCollections.value = await fetchCollections(additionalApiUrl.value)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      additionalError.value = `Error fetching collections: ${message}`
+      additionalCollections.value = []
+    } finally {
+      additionalIsLoading.value = false
+    }
+  } else {
+    additionalError.value = 'Please enter a valid URL'
+    additionalCollections.value = []
+  }
+}
+
+const handleAdditionalCollectionSelect = async (collection: ApiCollection): Promise<void> => {
+  selectedAdditionalCollection.value = collection
+  additionalSuccessMessage.value = `Selected collection: ${collection.title}`
+
+  // Set up the connection in the additional info store
+  additionalInfoStore.setConnectedCollection(collection, additionalApiUrl.value, additionalQueryParams.value)
+
+  saveSettings()
+  notificationStore.show(`Additional collection selected: ${collection.title}`, 'info')
+}
+
+const fetchAdditionalInformation = async (): Promise<void> => {
+  if (!selectedAdditionalCollection.value || !cjStore.cjFeatures.length) {
+    notificationStore.show('Please select both main data and additional collection first', 'error')
+    return
+  }
+
+  additionalIsLoading.value = true
+  additionalError.value = null
+
+  try {
+    // Extract all feature IDs from the loaded CityJSON features
+    const featureIds = cjStore.cjFeatures.map(feature => feature.id)
+
+    // Fetch additional information for all features
+    await additionalInfoStore.fetchAllAdditionalInfo(featureIds)
+
+    additionalSuccessMessage.value = `Fetched additional information for ${additionalInfoStore.loadingProgress.completed} out of ${featureIds.length} features`
+
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    additionalError.value = `Error fetching additional information: ${message}`
+  } finally {
+    additionalIsLoading.value = false
+  }
 }
 </script>
 
@@ -379,6 +471,219 @@ const handleOffsetChange = (): void => {
                     Temporal: {{ collection.extent.temporal.interval.join(' to ') }}
                   </p>
                 </template>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Additional Information API Section -->
+      <div v-if="cjStore.isLoaded" class="mt-8 border-t border-gray-200 pt-8">
+        <div class="text-center mb-6">
+          <h2 class="text-2xl font-bold text-gray-900 mb-2">Additional Information API</h2>
+          <p class="text-gray-600">Connect to a second Features API to enrich your data with additional attributes</p>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Additional API URL Input -->
+          <div class="space-y-2">
+            <label for="additionalApiUrl" class="block text-sm font-medium text-gray-700">
+              Additional Information API URL
+            </label>
+            <div class="flex gap-2">
+              <input id="additionalApiUrl" v-model="additionalApiUrl" type="url"
+                class="flex-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                placeholder="https://example.com/additional-info-api" />
+              <button @click="handleAdditionalApiUrlInput"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                :disabled="additionalIsLoading">
+                {{ additionalIsLoading ? 'Loading...' : 'Connect' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Additional Query Parameters -->
+          <div v-if="additionalCollections.length > 0" class="space-y-2">
+            <label for="additionalQueryParams" class="block text-sm font-medium text-gray-700">
+              Additional Query Parameters
+            </label>
+            <input id="additionalQueryParams" v-model="additionalQueryParams" type="text"
+              class="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+              placeholder="e.g., filter=property=value" @change="saveSettings" />
+            <p class="text-xs text-gray-500">
+              Enter query parameters to filter the additional information
+            </p>
+          </div>
+
+          <!-- Additional API Loading State -->
+          <div v-if="additionalIsLoading" class="text-center py-4">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-green-500 border-t-transparent">
+            </div>
+          </div>
+
+          <!-- Additional API Error Display -->
+          <div v-if="additionalError" class="rounded-md bg-red-50 p-4">
+            <div class="flex">
+              <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                    clip-rule="evenodd" />
+                </svg>
+              </div>
+              <div class="ml-3">
+                <h3 class="text-sm font-medium text-red-800">Error</h3>
+                <div class="mt-2 text-sm text-red-700">
+                  <p>{{ additionalError }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Additional API Success Message -->
+          <div v-if="additionalSuccessMessage" class="rounded-md bg-green-50 p-4">
+            <div class="flex">
+              <div class="flex-shrink-0">
+                <svg class="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                    clip-rule="evenodd" />
+                </svg>
+              </div>
+              <div class="ml-3">
+                <h3 class="text-sm font-medium text-green-800">Additional Information Connected</h3>
+                <div class="mt-2 text-sm text-green-700">
+                  <p>{{ additionalSuccessMessage }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Additional Collections Grid -->
+          <div v-if="additionalCollections.length > 0" class="grid grid-cols-1 gap-6">
+            <div v-for="collection in additionalCollections" :key="collection.id"
+              class="bg-white shadow rounded-lg overflow-hidden hover:shadow-lg transition-shadow duration-200 border-l-4 border-green-500"
+              :class="{ 'ring-2 ring-green-500': selectedAdditionalCollection?.id === collection.id }">
+              <div class="p-6">
+                <div class="flex justify-between items-start">
+                  <div class="flex-1">
+                    <h3 class="text-lg font-semibold text-gray-900">
+                      {{ collection.title }}
+                    </h3>
+                    <p class="mt-1 text-sm text-gray-600">ID: {{ collection.id }}</p>
+                  </div>
+                  <div class="flex gap-2">
+                    <button @click="handleAdditionalCollectionSelect(collection)"
+                      class="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                      {{
+                        selectedAdditionalCollection?.id === collection.id
+                          ? 'Selected'
+                          : 'Select'
+                      }}
+                    </button>
+                    <button v-if="selectedAdditionalCollection?.id === collection.id && cjStore.cjFeatures.length > 0"
+                      @click="fetchAdditionalInformation"
+                      :disabled="additionalIsLoading || additionalInfoStore.isLoading"
+                      class="inline-flex items-center px-3 py-1.5 border border-green-600 text-sm font-medium rounded-md shadow-sm text-green-600 bg-white hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {{
+                        additionalInfoStore.isLoading
+                          ? `Fetching... (${additionalInfoStore.getLoadingPercentage}%)`
+                          : 'Fetch Info'
+                      }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="mt-4 space-y-2">
+                  <p class="text-sm text-gray-600">{{ collection.description }}</p>
+
+                  <div class="flex items-center gap-4 text-sm text-gray-600">
+                    <span class="flex items-center">
+                      <svg class="h-5 w-5 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+                      </svg>
+                      Type: {{ collection.itemType }}
+                    </span>
+
+                    <span class="flex items-center">
+                      <svg class="h-5 w-5 mr-1 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                      </svg>
+                      Items: {{ collection.numOfItems ? collection.numOfItems : 'No items' }}
+                    </span>
+                  </div>
+
+                  <!-- Progress indicator -->
+                  <div v-if="additionalInfoStore.isLoading && selectedAdditionalCollection?.id === collection.id"
+                    class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
+                    <div class="flex items-center">
+                      <div class="flex-shrink-0">
+                        <div class="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent">
+                        </div>
+                      </div>
+                      <div class="ml-3 flex-1">
+                        <p class="text-sm text-blue-800 font-medium">
+                          Fetching additional information... ({{ additionalInfoStore.getLoadingPercentage }}%)
+                        </p>
+                        <div class="mt-2 w-full bg-blue-200 rounded-full h-2">
+                          <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            :style="{ width: `${additionalInfoStore.getLoadingPercentage}%` }"></div>
+                        </div>
+                        <p class="text-xs text-blue-600 mt-1">
+                          {{ additionalInfoStore.loadingProgress.completed }} completed,
+                          {{ additionalInfoStore.loadingProgress.failed }} failed,
+                          {{ additionalInfoStore.loadingProgress.total - additionalInfoStore.loadingProgress.completed -
+                            additionalInfoStore.loadingProgress.failed }} pending
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Additional info summary -->
+                  <div
+                    v-if="additionalInfoStore.isLoaded && selectedAdditionalCollection?.id === collection.id && additionalInfoStore.featuresInfo.size > 0"
+                    class="mt-4 p-4 bg-green-50 border border-green-200 rounded-md">
+                    <div class="flex items-center">
+                      <div class="flex-shrink-0">
+                        <svg class="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd"
+                            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                            clip-rule="evenodd" />
+                        </svg>
+                      </div>
+                      <div class="ml-3">
+                        <p class="text-sm text-green-800 font-medium">
+                          Additional information loaded for {{ additionalInfoStore.featuresInfo.size }} features
+                        </p>
+                        <p class="text-xs text-green-600 mt-1">
+                          Data is now available and can be viewed in the Features tab
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                    <div class="flex">
+                      <div class="flex-shrink-0">
+                        <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd"
+                            d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                            clip-rule="evenodd" />
+                        </svg>
+                      </div>
+                      <div class="ml-3">
+                        <p class="text-sm text-yellow-800">
+                          <strong>Note:</strong> Additional information will be fetched for each building based on
+                          matching
+                          feature IDs.
+                          Make sure the feature IDs in this collection correspond to the IDs in your main dataset.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
