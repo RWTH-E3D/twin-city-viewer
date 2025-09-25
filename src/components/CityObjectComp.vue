@@ -61,6 +61,45 @@
         </div>
       </div>
 
+      <!-- Additional Information Section -->
+      <div v-if="additionalInfo" class="mt-4 border-t-2 border-blue-200 pt-4">
+        <div class="flex items-center gap-2 mb-3">
+          <div class="w-3 h-3 bg-blue-500 rounded-full"></div>
+          <h5 class="font-semibold text-blue-800">Additional Information</h5>
+          <span class="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">External Data Source</span>
+        </div>
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+          <div class="grid gap-2 max-w-full">
+            <template v-if="additionalInfo.properties">
+              <div v-for="(value, name) in additionalInfo.properties" :key="name"
+                class="grid grid-cols-[120px_1fr] gap-2 items-center">
+                <span class="text-sm font-medium text-blue-800 truncate" :title="String(name)">{{ name }}:</span>
+                <span class="text-sm text-blue-700 bg-white px-2 py-1 rounded border">{{ value }}</span>
+              </div>
+            </template>
+            <div v-if="!additionalInfo.properties || Object.keys(additionalInfo.properties).length === 0"
+              class="text-sm text-blue-600 italic">
+              No additional properties available
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No Additional Information Message -->
+      <div v-else-if="additionalInfoStore.isLoaded && additionalInfoStore.connectedCollection"
+        class="mt-4 border-t-2 border-gray-200 pt-4">
+        <div class="flex items-center gap-2 mb-3">
+          <div class="w-3 h-3 bg-gray-400 rounded-full"></div>
+          <h5 class="font-semibold text-gray-600">Additional Information</h5>
+          <span class="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">External Data Source</span>
+        </div>
+        <div class="bg-gray-50 border border-gray-200 rounded-lg p-3">
+          <div class="text-sm text-gray-600 italic">
+            No additional information found for this feature ID: {{ props.featureID }}
+          </div>
+        </div>
+      </div>
+
       <!-- Transform Controls -->
       <div class="mt-2">
         <button @click="showTransformControls = !showTransformControls"
@@ -123,7 +162,7 @@
           <div class="flex items-center gap-2">
             <span class="font-semibold">Process {{ proc.jobId.slice(-4) }}</span>
             <span class="text-xs text-gray-500">Sum: {{ proc.sum.toLocaleString(undefined, { maximumFractionDigits: 2 })
-            }}</span>
+              }}</span>
             <label class="ml-2 text-xs flex items-center gap-1">
               <input type="checkbox" v-model="proc.visible" /> Show in graph
             </label>
@@ -165,6 +204,7 @@ import CityObjectCoor from './CityObjectGeom.vue'
 import { multiSelStore } from '@/stores/selectionStore'
 import { useMapStore } from '@/stores/mapStore'
 import { useJobResultsStore } from '@/stores/jobResultsStore'
+import { useAdditionalInfoStore } from '@/stores/additionalInfoStore'
 
 import type { CityObject, CityJSONDocument } from '@/types/cityjson'
 import type { Vertices } from '@/types/cityjson'
@@ -172,6 +212,7 @@ import type { Vertices } from '@/types/cityjson'
 const route = useRoute()
 const mSelStore = multiSelStore()
 const mapStore = useMapStore()
+const additionalInfoStore = useAdditionalInfoStore()
 
 
 const props = defineProps<{
@@ -333,6 +374,10 @@ const newAttributeName = ref('')
 const newAttributeValue = ref('')
 
 const isMapRoute = computed(() => route.path === '/')
+
+const additionalInfo = computed(() => {
+  return additionalInfoStore.getFeatureInfo(props.featureID)
+})
 
 const addAttribute = (): void => {
   if (!newAttributeName.value.trim()) return
