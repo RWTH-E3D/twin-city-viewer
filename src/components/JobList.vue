@@ -7,6 +7,7 @@ import type { Job, JobStatusType } from '@/types/processes'
 const props = defineProps<{
   jobs: Job[]
   newJobId: string | null
+  baseURL?: string
 }>()
 
 const jobResultsStore = useJobResultsStore()
@@ -94,7 +95,7 @@ const formatDateUTC = (dateString: string): string => {
 const viewResults = async (job: Job): Promise<void> => {
   if (job.status !== 'successful') return
   try {
-    const results = await getJobResults(job.jobID)
+    const results = await getJobResults(job.jobID, props.baseURL)
     selectedJob.value = { ...job, results }
   } catch (e) {
     error.value = 'Failed to load job results'
@@ -103,7 +104,7 @@ const viewResults = async (job: Job): Promise<void> => {
 
 const handleCancel = async (jobId: string): Promise<void> => {
   try {
-    await cancelJob(jobId)
+    await cancelJob(jobId, props.baseURL)
   } catch (e) {
     error.value = 'Failed to cancel job'
   }
@@ -111,7 +112,7 @@ const handleCancel = async (jobId: string): Promise<void> => {
 
 const saveResult = async (job: Job): Promise<void> => {
   try {
-    const results = await getJobResults(job.jobID)
+    const results = await getJobResults(job.jobID, props.baseURL)
     jobResultsStore.saveJobResult(job.jobID, job.processID, results)
   } catch (e) {
     error.value = 'Failed to save job results'

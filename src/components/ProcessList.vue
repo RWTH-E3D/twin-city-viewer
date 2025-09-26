@@ -16,6 +16,7 @@ const notificationStore = useNotificationStore()
 
 const props = defineProps<{
   processes: Process[]
+  baseURL?: string
 }>()
 
 const emit = defineEmits<{
@@ -82,6 +83,7 @@ const startJob = async () => {
     const result = (await startProcess(
       selectedProcess.value!.id,
       processedInputs as ProcessInputs,
+      props.baseURL,
     )) as JobStartResponse
 
     notificationStore.show(

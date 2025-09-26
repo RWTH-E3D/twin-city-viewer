@@ -142,8 +142,8 @@ onUnmounted(stopPolling)
 
     <!-- Content -->
     <div v-if="!isInitialLoad" class="grid grid-cols-1 md:grid-cols-2 gap-6 h-[calc(100vh-12rem)]">
-      <ProcessList :processes="processes" @job-created="handleJobCreated" />
-      <JobList :jobs="jobs" :new-job-id="newJobId ?? null" />
+      <ProcessList :processes="processes" :base-u-r-l="apiEndpoint" @job-created="handleJobCreated" />
+      <JobList :jobs="jobs" :new-job-id="newJobId ?? null" :base-u-r-l="apiEndpoint" />
     </div>
   </div>
 </template>
