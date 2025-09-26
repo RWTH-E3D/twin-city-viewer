@@ -27,7 +27,7 @@ export const startProcess = async (
   baseURL?: string,
 ): Promise<JobStartResponse> => {
   const api = getApi(baseURL)
-  const response: AxiosResponse<JobStartResponse> = await api.post(`/${processId}/execution`, {
+  const response: AxiosResponse<JobStartResponse> = await api.post(`/processes/${processId}/execution`, {
     inputs,
   })
   return response.data
