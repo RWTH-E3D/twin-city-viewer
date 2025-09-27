@@ -64,7 +64,7 @@ const createBuildingData = () => {
       name: feature.id,
       function: "residential",
       usage: props.building_type,
-      year: 1960,
+      year: props.construction_year,
       n_floors: props.floor_number,
       height: props.height,
       area: props.floor_area
@@ -91,6 +91,7 @@ const openProcessDialog = (process: Process) => {
       stop_time: 86400,
       intervals: 1440,
       processes: 1,
+      retrofit: 'standard',
       buildings: buildings
     }
   } else if (process.inputs && process.inputs.properties) {
@@ -232,6 +233,15 @@ const startJob = async () => {
                 <label class="block text-sm font-medium text-gray-700 mb-1">Processes</label>
                 <input type="number" v-model="inputData.processes" class="w-full border rounded px-3 py-2" />
               </div>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Retrofit Type</label>
+              <select v-model="inputData.retrofit" class="w-full border rounded px-3 py-2">
+                <option value="standard">Standard</option>
+                <option value="retrofit">Retrofit</option>
+                <option value="retrofit_adv">Retrofit Advanced</option>
+              </select>
             </div>
 
             <div>

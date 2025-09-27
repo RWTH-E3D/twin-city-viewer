@@ -72,14 +72,30 @@
           <div class="grid gap-2 max-w-full">
             <template v-if="additionalInfo.properties">
               <div v-for="(value, name) in additionalInfo.properties" :key="name"
-                class="grid grid-cols-[120px_1fr] gap-2 items-center">
+                class="grid grid-cols-[120px_1fr_auto] gap-2 items-center">
                 <span class="text-sm font-medium text-blue-800 truncate" :title="String(name)">{{ name }}:</span>
-                <span class="text-sm text-blue-700 bg-white px-2 py-1 rounded border">{{ value }}</span>
+                <input type="text" :value="value"
+                  @input="updateAdditionalProperty(String(name), ($event.target as HTMLInputElement).value)"
+                  class="text-sm text-blue-700 bg-white px-2 py-1 rounded border focus:border-blue-500 focus:ring-blue-500 min-w-0" />
+                <button @click="removeAdditionalProperty(String(name))"
+                  class="text-red-500 rounded hover:bg-blue-100 px-2">
+                  ×
+                </button>
               </div>
             </template>
             <div v-if="!additionalInfo.properties || Object.keys(additionalInfo.properties).length === 0"
               class="text-sm text-blue-600 italic">
               No additional properties available
+            </div>
+            <!-- Add new additional property -->
+            <div class="grid grid-cols-[120px_1fr_auto] gap-2 items-center border-t border-blue-200 pt-2 mt-2">
+              <input type="text" v-model="newAdditionalPropertyName" placeholder="Name"
+                class="text-sm border rounded px-2 py-1 min-w-0 focus:border-blue-500 focus:ring-blue-500" />
+              <input type="text" v-model="newAdditionalPropertyValue" placeholder="Value"
+                class="text-sm border rounded px-2 py-1 min-w-0 focus:border-blue-500 focus:ring-blue-500" />
+              <button @click="addAdditionalProperty" class="text-green-500 rounded hover:bg-blue-100 px-2">
+                +
+              </button>
             </div>
           </div>
         </div>
@@ -162,7 +178,7 @@
           <div class="flex items-center gap-2">
             <span class="font-semibold">Process {{ proc.jobId.slice(-4) }}</span>
             <span class="text-xs text-gray-500">Sum: {{ proc.sum.toLocaleString(undefined, { maximumFractionDigits: 2 })
-              }}</span>
+            }}</span>
             <label class="ml-2 text-xs flex items-center gap-1">
               <input type="checkbox" v-model="proc.visible" /> Show in graph
             </label>
@@ -497,6 +513,8 @@ const showTransformControls = ref(false)
 const showGeometry = ref(false)
 const newAttributeName = ref('')
 const newAttributeValue = ref('')
+const newAdditionalPropertyName = ref('')
+const newAdditionalPropertyValue = ref('')
 
 const isMapRoute = computed(() => route.path === '/')
 
@@ -518,6 +536,57 @@ const removeAttribute = (name: string): void => {
   if (props.cityObject.attributes) {
     delete props.cityObject.attributes[name]
   }
+}
+
+const updateAdditionalProperty = (name: string, value: string): void => {
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info && info.properties) {
+    // Convert numeric strings to numbers if possible
+    const numericValue = !isNaN(Number(value)) && value.trim() !== '' ? Number(value) : value
+    info.properties[name] = numericValue
+  }
+}
+
+const removeAdditionalProperty = (name: string): void => {
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info && info.properties) {
+    delete info.properties[name]
+  }
+}
+
+const addAdditionalProperty = (): void => {
+  if (!newAdditionalPropertyName.value.trim()) return
+
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info) {
+    if (!info.properties) {
+      info.properties = {}
+    }
+    // Convert numeric strings to numbers if possible
+    const numericValue = !isNaN(Number(newAdditionalPropertyValue.value)) && newAdditionalPropertyValue.value.trim() !== ''
+      ? Number(newAdditionalPropertyValue.value)
+      : newAdditionalPropertyValue.value
+    info.properties[newAdditionalPropertyName.value] = numericValue
+  } else {
+    // Create new additional info entry if it doesn't exist
+    const numericValue = !isNaN(Number(newAdditionalPropertyValue.value)) && newAdditionalPropertyValue.value.trim() !== ''
+      ? Number(newAdditionalPropertyValue.value)
+      : newAdditionalPropertyValue.value
+
+    const newFeatureInfo = {
+      type: 'Feature' as const,
+      id: props.featureID,
+      geometry: null,
+      properties: {
+        [newAdditionalPropertyName.value]: numericValue
+      },
+      links: []
+    }
+    additionalInfoStore.addFeatureInfo(newFeatureInfo)
+  }
+
+  newAdditionalPropertyName.value = ''
+  newAdditionalPropertyValue.value = ''
 }
 
 const calculateBounds = (): { center: [number, number, number] } => {
