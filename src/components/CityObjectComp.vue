@@ -176,9 +176,9 @@
         <h5 class="mb-2">Process Results</h5>
         <div v-for="proc in processResultsForObject" :key="proc.jobId" class="mb-2 p-2 bg-gray-50 rounded">
           <div class="flex items-center gap-2">
-            <span class="font-semibold">Process {{ proc.jobId.slice(-4) }}</span>
+            <span class="font-semibold">Process: {{ proc.jobId.slice(-9) }}</span>
             <span class="text-xs text-gray-500">Sum: {{ proc.sum.toLocaleString(undefined, { maximumFractionDigits: 2 })
-            }}</span>
+              }}</span>
             <label class="ml-2 text-xs flex items-center gap-1">
               <input type="checkbox" v-model="proc.visible" /> Show in graph
             </label>

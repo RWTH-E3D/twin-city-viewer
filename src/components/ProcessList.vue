@@ -240,7 +240,7 @@ const startJob = async () => {
               <select v-model="inputData.retrofit" class="w-full border rounded px-3 py-2">
                 <option value="standard">Standard</option>
                 <option value="retrofit">Retrofit</option>
-                <option value="retrofit_adv">Retrofit Advanced</option>
+                <option value="adv_retrofit">Retrofit Advanced</option>
               </select>
             </div>
 
