@@ -96,6 +96,8 @@ const processSumMaps = computed(() => {
   const maps: Record<string, Record<string, number>> = {}
   for (const jobResult of jobResultsStore.savedResults) {
     const jobId = jobResult.jobId || ''
+
+    // Handle regular process results
     const result = jobResult.results?.result
     if (result && result.building_results) {
       const sumMap: Record<string, number> = {}
@@ -106,6 +108,20 @@ const processSumMaps = computed(() => {
       }
       if (Object.keys(sumMap).length > 0 && jobId) {
         maps[jobId] = sumMap
+      }
+    }
+
+    // Handle json-build-and-simulate heat load sums
+    if (jobResult.processId === 'json-build-and-simulate' && jobResult.results?.heat_loads) {
+      const heatLoads = jobResult.results.heat_loads
+      const heatSumMap: Record<string, number> = {}
+      for (const [featureId, heatData] of Object.entries(heatLoads)) {
+        if (heatData && typeof heatData === 'object' && 'heat_load_sum' in heatData && typeof (heatData as any).heat_load_sum === 'number') {
+          heatSumMap[featureId] = (heatData as any).heat_load_sum
+        }
+      }
+      if (Object.keys(heatSumMap).length > 0 && jobId) {
+        maps[jobId + '_heat'] = heatSumMap
       }
     }
   }
@@ -129,8 +145,13 @@ const discoverAvailableParameters = (): void => {
   // Add process sum options
   const processOptions: string[] = []
   for (const jobId of Object.keys(processSumMaps.value)) {
-    const suffix = jobId.slice(-4)
-    processOptions.push(`Process Sum (${suffix})`)
+    if (jobId.endsWith('_heat')) {
+      const suffix = jobId.replace('_heat', '').slice(-4)
+      processOptions.push(`Heat Load Sum (${suffix})`)
+    } else {
+      const suffix = jobId.slice(-4)
+      processOptions.push(`Process Sum (${suffix})`)
+    }
   }
 
   // Add additional info parameters
@@ -167,7 +188,30 @@ const calculateParameterRange = (parameterName: string): void => {
   if (processSumMatch) {
     // Find the jobId ending with these 4 chars
     const suffix = processSumMatch[1]
-    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix))
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix) && !jid.endsWith('_heat'))
+    if (jobId) {
+      const sumMap = processSumMaps.value[jobId]
+      for (const feature of cjStore.cjFeatures) {
+        if (sumMap[feature.id] !== undefined) {
+          const value = sumMap[feature.id]
+          if (!isNaN(value)) {
+            min = Math.min(min, value)
+            max = Math.max(max, value)
+          }
+        }
+      }
+    }
+    currentParameterRange.value =
+      min !== Infinity && max !== -Infinity ? { min, max } : { min: 0, max: 100 }
+    return
+  }
+
+  // Check if this is a heat load sum parameter
+  const heatLoadSumMatch = parameterName.match(/^Heat Load Sum \((\w{4})\)$/)
+  if (heatLoadSumMatch) {
+    // Find the jobId ending with these 4 chars plus _heat
+    const suffix = heatLoadSumMatch[1]
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.replace('_heat', '').endsWith(suffix) && jid.endsWith('_heat'))
     if (jobId) {
       const sumMap = processSumMaps.value[jobId]
       for (const feature of cjStore.cjFeatures) {
@@ -244,7 +288,7 @@ const getProcessSumForFeature = (featureId: string): number | null => {
   const processSumMatch = selectedParameter.value.match(/^Process Sum \((\w{4})\)$/)
   if (processSumMatch) {
     const suffix = processSumMatch[1]
-    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix))
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.endsWith(suffix) && !jid.endsWith('_heat'))
     if (jobId) {
       const sumMap = processSumMaps.value[jobId]
       if (sumMap && sumMap[featureId] !== undefined) {
@@ -252,6 +296,19 @@ const getProcessSumForFeature = (featureId: string): number | null => {
       }
     }
   }
+
+  const heatLoadSumMatch = selectedParameter.value.match(/^Heat Load Sum \((\w{4})\)$/)
+  if (heatLoadSumMatch) {
+    const suffix = heatLoadSumMatch[1]
+    const jobId = Object.keys(processSumMaps.value).find((jid) => jid.replace('_heat', '').endsWith(suffix) && jid.endsWith('_heat'))
+    if (jobId) {
+      const sumMap = processSumMaps.value[jobId]
+      if (sumMap && sumMap[featureId] !== undefined) {
+        return sumMap[featureId]
+      }
+    }
+  }
+
   return null
 }
 
@@ -798,8 +855,8 @@ const createGeometryMesh = (
   let opacity: number = semanticColorsStore.defaultOpacity
   let useParameterColoring = false
 
-  // Check for process sum coloring
-  if (selectedParameter.value.startsWith('Process Sum')) {
+  // Check for process sum coloring (including heat load sums)
+  if (selectedParameter.value.startsWith('Process Sum') || selectedParameter.value.startsWith('Heat Load Sum')) {
     if (featureId) {
       const sumValue = getProcessSumForFeature(featureId)
       if (sumValue !== null) {
