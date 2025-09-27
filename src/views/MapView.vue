@@ -1220,7 +1220,11 @@ const setup3DScene = async (): Promise<void> => {
           obj = obj.parent
         }
         if (obj.name.startsWith('obj_')) {
-          forwardClick(obj.parent!.name.split('_')[1], obj.name.split('_')[1])
+          let parentSplit = obj.parent!.name.split('_')
+          let parentId = parentSplit.slice(1).join('_')
+          let objSplit = obj.name.split('_')
+          let objId = objSplit.slice(1).join('_')
+          forwardClick(parentId, objId)
         }
       }
     },
