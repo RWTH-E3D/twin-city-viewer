@@ -51,6 +51,31 @@ export const calculateBbox = (features: CityJSONFeature[], cjBase: CityJSONDocum
   return [...min, ...max]
 }
 
+const hasValidGeographicalExtent = (extent: unknown): extent is number[] => {
+  return (
+    Array.isArray(extent) &&
+    extent.length === 6 &&
+    extent.every((value) => Number.isFinite(value))
+  )
+}
+
+export const ensureGeographicalExtent = (
+  cjBase: CityJSONDocument,
+  cjFeatures: CityJSONFeature[],
+): void => {
+  if (!cjBase.metadata) {
+    cjBase.metadata = {
+      referenceSystem: 'unknown',
+      geographicalExtent: calculateBbox(cjFeatures, cjBase),
+    }
+    return
+  }
+
+  if (!hasValidGeographicalExtent(cjBase.metadata.geographicalExtent)) {
+    cjBase.metadata.geographicalExtent = calculateBbox(cjFeatures, cjBase)
+  }
+}
+
 export const loadDataFromApi = async (
   apiUrl: string,
   collection: ApiCollection,
@@ -92,9 +117,7 @@ export const loadDataFromApi = async (
     const cjBase: CityJSONDocument = parsedData[0]
     const cjFeatures: CityJSONFeature[] = parsedData.slice(1)
 
-    if (cjBase.metadata) {
-      cjBase.metadata.geographicalExtent = calculateBbox(cjFeatures, cjBase)
-    }
+    ensureGeographicalExtent(cjBase, cjFeatures)
 
     cjStore.updating = true
     cjStore.cjBase = cjBase
