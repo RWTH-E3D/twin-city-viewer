@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, watch, ref, computed } from 'vue'
 import type { ComputedRef } from 'vue'
 import type { Ref } from 'vue'
 import maplibregl from 'maplibre-gl'
-import type { Map, CustomLayerInterface, LngLat, LngLatLike } from 'maplibre-gl'
+import type { Map, CustomLayerInterface, LngLat, LayerSpecification } from 'maplibre-gl'
 import * as THREE from 'three'
 import earcut from 'earcut'
 import { v5 as uuidv5 } from 'uuid'
@@ -12,6 +12,7 @@ import MaplibreTerradrawControl from '@watergis/maplibre-gl-terradraw'
 import Modal from '@/components/Modal.vue'
 import { createFeatureWithGeometry } from '@/utils/buildingCreation'
 import { sortCoordinatesByAngle } from '@/utils/coordinateHandling'
+import { SceneAnchor, SceneProjector } from '@/utils/sceneProjection'
 
 import { useCjStore } from '@/stores/cjStore'
 import { singleSelStore, multiSelStore } from '@/stores/selectionStore'
@@ -42,6 +43,7 @@ const params = ref<BuildingFormParams>({
 })
 const showLegend = ref<boolean>(false)
 const showLabels = ref<boolean>(true)
+const showHillshade = ref<boolean>(true)
 let buildingCoordiantes: { x: number; y: number; z: number }[] = []
 
 const cjStore = useCjStore()
@@ -59,14 +61,10 @@ mapStore.canSwitchOperation = true
 
 let map: Map | null = null
 let scene: THREE.Scene | null = null
-let epsgOrigin: [number, number] | null = null
-let originHeight: number | null = null
-let convergenceAngle: number | null = null
-let rotationMatrix: THREE.Matrix4 | null = null
+let sceneAnchor: SceneAnchor | null = null
+let sceneProjector: SceneProjector | null = null
+const projectedVertexCache = new globalThis.Map<string, Float32Array>()
 let drawControl: MaplibreTerradrawControl | null = null
-let currentViewBounds: [number, number, number, number] | null = null // [minX, minY, maxX, maxY]
-let lastOriginUpdate: number = 0
-const ORIGIN_UPDATE_THRESHOLD = 100
 let drawInstance: ReturnType<
   typeof MaplibreTerradrawControl.prototype.getTerraDrawInstance
 > | null = null
@@ -82,6 +80,7 @@ const watchers: MapWatchers = {
   showMap: null,
   selectedParameter: null,
   showLabels: null,
+  showHillshade: null,
 }
 
 const availableParameters = ref<string[]>(['None'])
@@ -494,6 +493,8 @@ const someFeatureChanged = (): void => {
   if (obj) {
     disposeObject(obj)
     scene.updateMatrixWorld(true)
+    // the geometry may have changed, so its cached projection is stale
+    projectedVertexCache.delete(sSelStore.selFeatID)
 
     const newFeature = cjStore.cjFeatures.find((f) => f.id === sSelStore.selFeatID)
     if (newFeature) {
@@ -513,152 +514,87 @@ const getUniqueColor = ((): (() => THREE.Color) => {
   }
 })()
 
-const calculateOptimalOrigin = (
-  mapInstance: Map,
-): { origin: [number, number]; needsUpdate: boolean } => {
-  const bounds = mapInstance.getBounds()
-  const center = mapInstance.getCenter()
 
-  const ne = mapStore.transformFromWGS84([
-    bounds.getNorthEast().lng,
-    bounds.getNorthEast().lat,
-  ])
-  const sw = mapStore.transformFromWGS84([
-    bounds.getSouthWest().lng,
-    bounds.getSouthWest().lat,
-  ])
-  const centerUTM = mapStore.transformFromWGS84([center.lng, center.lat])
+const buildPartyWallGroup = (): THREE.Group | null => {
+  if (!sceneProjector) return null
 
-  const viewBounds: [number, number, number, number] = [sw[0], sw[1], ne[0], ne[1]]
+  const partyWallGroup = new THREE.Group()
+  partyWallGroup.name = 'party_walls'
 
-  let needsUpdate = false
+  for (const jobResult of jobResultsStore.savedResults) {
+    const realResult = jobResult.results?.result
+    if (
+      !realResult ||
+      (cjStore.currentCollection.id !== realResult.processed_collection &&
+        realResult.processed_collection !== 'sent_collection')
+    ) {
+      continue
+    }
+    if (!realResult.party_walls || !Array.isArray(realResult.party_walls)) continue
 
-  if (!currentViewBounds) {
-    needsUpdate = true
-  } else {
-    const distanceFromOrigin = Math.sqrt(
-      Math.pow(centerUTM[0] - epsgOrigin![0], 2) + Math.pow(centerUTM[1] - epsgOrigin![1], 2),
-    )
+    for (const partyWall of realResult.party_walls) {
+      const boundary: number[][] = partyWall.surface
+      if (!boundary || boundary.length < 3) continue
 
-    if (distanceFromOrigin > ORIGIN_UPDATE_THRESHOLD) {
-      needsUpdate = true
+      const wallVertices = sceneProjector.projectRing(boundary)
+      const indices = Array.from({ length: boundary.length }, (_, i) => i)
+      const triangleIndices = triangulatePolygon(indices, wallVertices)
+      if (triangleIndices.length === 0) continue
+
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position', new THREE.BufferAttribute(wallVertices, 3))
+      geometry.setIndex(triangleIndices)
+      geometry.computeVertexNormals()
+
+      const material = new THREE.MeshPhongMaterial({
+        color: 0xff0000,
+        side: THREE.DoubleSide,
+      })
+      partyWallGroup.add(new THREE.Mesh(geometry, material))
     }
   }
-
-  currentViewBounds = viewBounds
-  return {
-    origin: [centerUTM[0], centerUTM[1]] as [number, number],
-    needsUpdate,
-  }
+  return partyWallGroup
 }
 
-const updateSceneOrigin = async (mapInstance: Map, newOrigin: [number, number]): Promise<void> => {
-  if (!scene) return
-
-  epsgOrigin = newOrigin
-
-  // recalculate convergence angle for new origin
-  const newOriginWGS84 = mapStore.transformToWGS84(newOrigin)
-  const zone = Math.floor((newOriginWGS84[0] + 180) / 6) + 1
-  const centralMeridian = zone * 6 - 183
-  convergenceAngle = Math.atan(
-    Math.tan(((newOriginWGS84[0] - centralMeridian) * Math.PI) / 180) *
-    Math.sin((newOriginWGS84[1] * Math.PI) / 180),
-  )
-  rotationMatrix = new THREE.Matrix4().makeRotationZ(-convergenceAngle)
-
-  // update origin height
-  originHeight =
-    mapInstance.terrain.getElevationForLngLatZoom(
-      new maplibregl.LngLat(newOriginWGS84[0], newOriginWGS84[1]),
-      mapInstance.transform.tileZoom,
-    ) || 0
-
-  // rebuild scene with new origin
+/** Rebuilds every feature mesh of the scene group (colouring / selection changes). */
+const rebuildSceneGroup = (): void => {
+  if (!scene || !cjStore.cjBase) return
   const sceneGroup = scene.getObjectByName('$group')
-  if (sceneGroup) {
-    const partyWallsExist = sceneGroup.getObjectByName('party_walls') !== undefined
-    while (sceneGroup.children.length > 0) {
-      disposeObject(sceneGroup.children[0])
-    }
+  if (!sceneGroup) return
 
-    cjStore.cjFeatures.forEach((feature) => {
-      sceneGroup.add(featureGroupToThree(feature, cjStore.cjBase!))
-    })
-    if (partyWallsExist) {
-
-      const results = jobResultsStore.savedResults
-      for (const jobResult of results) {
-        const realResult = jobResult.results?.result
-        if (
-          !realResult ||
-          (cjStore.currentCollection.id !== realResult.processed_collection &&
-            realResult.processed_collection !== 'sent_collection')
-        ) {
-          continue
-        }
-
-        if (realResult.party_walls && Array.isArray(realResult.party_walls)) {
-          // create new partyWallGroup
-          const partyWallGroup = new THREE.Group()
-          for (const partyWall of realResult.party_walls) {
-            let boundary: number[][] = partyWall.surface
-            if (!boundary || boundary.length < 3) continue
-
-            const wallVertices = new Float32Array(
-              boundary.flatMap(([x, y, z]) => {
-                const vector = new THREE.Vector3(
-                  x - epsgOrigin![0],
-                  y - epsgOrigin![1],
-                  z - originHeight!,
-                )
-                vector.applyMatrix4(rotationMatrix!)
-                return [vector.x, vector.y, vector.z]
-              }),
-            )
-
-            const indices = Array.from({ length: boundary.length }, (_, i) => i)
-            const triangleIndices = triangulatePolygon(indices, wallVertices)
-            if (triangleIndices.length === 0) continue
-
-            const geometry = new THREE.BufferGeometry()
-            geometry.setAttribute('position', new THREE.BufferAttribute(wallVertices, 3))
-            geometry.setIndex(triangleIndices)
-            geometry.computeVertexNormals()
-
-            const material = new THREE.MeshPhongMaterial({
-              color: 0xffff00,
-              side: THREE.DoubleSide,
-              opacity: 1,
-              transparent: false,
-            })
-
-            const mesh = new THREE.Mesh(geometry, material)
-            partyWallGroup.add(mesh)
-          }
-          partyWallGroup.name = 'party_walls'
-          sceneGroup.add(partyWallGroup)
-        }
-      }
-    }
+  while (sceneGroup.children.length > 0) {
+    disposeObject(sceneGroup.children[0])
   }
+  cjStore.cjFeatures.forEach((feature) => {
+    sceneGroup.add(featureGroupToThree(feature, cjStore.cjBase!))
+  })
+  const partyWalls = buildPartyWallGroup()
+  if (partyWalls) sceneGroup.add(partyWalls)
 
-  lastOriginUpdate = Date.now()
-  mapInstance.triggerRepaint()
+  map?.triggerRepaint()
+}
+
+/**
+ * Scene-space vertices of a feature. 
+ */
+const getProjectedVertices = (
+  feature: CityJSONFeature,
+  cjBase: CityJSONDocument,
+): Float32Array => {
+  const cached = projectedVertexCache.get(feature.id)
+  if (cached && cached.length === feature.vertices.length * 3) return cached
+
+  const projected = sceneProjector!.projectCityJsonVertices(
+    feature.vertices,
+    cjBase.transform.scale,
+    cjBase.transform.translate,
+  )
+  projectedVertexCache.set(feature.id, projected)
+  return projected
 }
 
 const featureGroupToThree = (feature: CityJSONFeature, cjBase: CityJSONDocument): THREE.Group => {
-  const vertices = new Float32Array(
-    feature.vertices.flatMap(([x, y, z]) => {
-      const vector = new THREE.Vector3(
-        x * cjBase.transform.scale[0] + cjBase.transform.translate[0] - epsgOrigin![0],
-        y * cjBase.transform.scale[1] + cjBase.transform.translate[1] - epsgOrigin![1],
-        z * cjBase.transform.scale[2] + cjBase.transform.translate[2] - originHeight!,
-      )
-      vector.applyMatrix4(rotationMatrix!)
-      return [vector.x, vector.y, vector.z]
-    }),
-  )
+  const vertices = getProjectedVertices(feature, cjBase)
 
   const featureGroup = new THREE.Group()
   featureGroup.name = 'feature_' + feature.id
@@ -974,20 +910,51 @@ const projectTo2D = (
   return points2D
 }
 
+const HILLSHADE_LAYER_ID = 'terrain-hillshade'
+
+const withHillshadeLayer = (layers: LayerSpecification[]): LayerSpecification[] => {
+  const hillshade = {
+    id: HILLSHADE_LAYER_ID,
+    type: 'hillshade',
+    source: 'hillshadeSource',
+    layout: { visibility: showHillshade.value ? 'visible' : 'none' },
+    paint: {
+      'hillshade-exaggeration': 0.45,
+      'hillshade-illumination-direction': 335,
+      'hillshade-illumination-anchor': 'map',
+      'hillshade-shadow-color': 'rgba(58, 62, 74, 0.55)',
+      'hillshade-highlight-color': 'rgba(255, 255, 255, 0.3)',
+      'hillshade-accent-color': 'rgba(58, 62, 74, 0.12)',
+    },
+  } as unknown as LayerSpecification
+
+  const firstOverlay = layers.findIndex(
+    (layer) => layer.type === 'line' || layer.type === 'symbol',
+  )
+  const insertAt = firstOverlay === -1 ? layers.length : firstOverlay
+  return [...layers.slice(0, insertAt), hillshade, ...layers.slice(insertAt)]
+}
+
 const setup3DScene = async (): Promise<void> => {
   if (!cjStore.cjBase) return
 
   let sceneOrigin: LngLat = new maplibregl.LngLat(6.083786, 50.775442)
   try {
     const geoExtent = cjStore.cjBase.metadata?.geographicalExtent
-    if (geoExtent) {
-      const middle = [(geoExtent[0] + geoExtent[3]) / 2, (geoExtent[1] + geoExtent[4]) / 2]
-      const [lng, lat] = await mapStore.transformToWGS84(middle)
+    const middle = geoExtent
+      ? [(geoExtent[0] + geoExtent[3]) / 2, (geoExtent[1] + geoExtent[4]) / 2]
+      : cjStore.cjBase.transform?.translate?.slice(0, 2)
+    if (middle) {
+      const [lng, lat] = mapStore.transformToWGS84(middle)
       sceneOrigin = new maplibregl.LngLat(lng, lat)
     }
   } catch (error) {
     console.error('Could not determine scene origin from metadata:', error)
   }
+
+  sceneAnchor = new SceneAnchor(sceneOrigin.lng, sceneOrigin.lat)
+  sceneProjector = new SceneProjector(sceneAnchor, mapStore.currentCRS)
+  projectedVertexCache.clear()
 
   const baseStyle = await (await fetch(mapStore.baseStyleUrl)).json()
   const customStyle = {
@@ -1000,7 +967,14 @@ const setup3DScene = async (): Promise<void> => {
         tileSize: 256,
         maxzoom: 15,
       },
+      hillshadeSource: {
+        type: 'raster-dem',
+        url: mapStore.terrainSourceUrl,
+        tileSize: 256,
+        maxzoom: 15,
+      },
     },
+    layers: withHillshadeLayer(baseStyle.layers),
     terrain: { source: 'terrainSource', exaggeration: 1 },
   }
 
@@ -1086,6 +1060,37 @@ const setup3DScene = async (): Promise<void> => {
   }
   map.addControl(new LabelControl(), 'top-right')
 
+  class HillshadeControl {
+    private _map: Map | undefined
+    private _container: HTMLElement
+
+    constructor() {
+      this._container = document.createElement('div')
+      this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group'
+    }
+
+    onAdd(map: Map) {
+      this._map = map
+      const button = document.createElement('button')
+      button.className = 'maplibregl-ctrl-icon flex items-center justify-center px-1 py-0'
+      button.type = 'button'
+      button.title = 'Toggle Terrain Shading'
+      button.innerHTML =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline;"><path d="M2 20h20L14 7l-4 6-2-3z"></path><path d="M14 7l4 7h-8" fill="currentColor" stroke="none" opacity="0.35"></path></svg>'
+      button.onclick = () => {
+        showHillshade.value = !showHillshade.value
+      }
+      this._container.appendChild(button)
+      return this._container
+    }
+
+    onRemove() {
+      this._container.parentNode?.removeChild(this._container)
+      this._map = undefined
+    }
+  }
+  map.addControl(new HillshadeControl(), 'top-right')
+
   const BoxCustomLayer: ThreeJsLayer = {
     id: '3d-building-model',
     type: 'custom',
@@ -1104,25 +1109,6 @@ const setup3DScene = async (): Promise<void> => {
         0.1,
         1e6,
       )
-
-      originHeight =
-        mapInstance.terrain.getElevationForLngLatZoom(
-          sceneOrigin,
-          map?.transform.tileZoom as number,
-        ) || 0
-      console.log('Origin height:', originHeight)
-      epsgOrigin = mapStore.transformFromWGS84([sceneOrigin.lng, sceneOrigin.lat]) as [
-        number,
-        number,
-      ]
-
-      const zone = Math.floor((sceneOrigin.lng + 180) / 6) + 1
-      const centralMeridian = zone * 6 - 183
-      convergenceAngle = Math.atan(
-        Math.tan(((sceneOrigin.lng - centralMeridian) * Math.PI) / 180) *
-        Math.sin((sceneOrigin.lat * Math.PI) / 180),
-      )
-      rotationMatrix = new THREE.Matrix4().makeRotationZ(-convergenceAngle)
 
       this.customTransform = new THREE.Matrix4()
         .makeRotationX(Math.PI / 2)
@@ -1151,99 +1137,21 @@ const setup3DScene = async (): Promise<void> => {
       sceneGroup.name = '$group'
       cjFeatures.forEach((feature) => sceneGroup.add(featureGroupToThree(feature, cjBase)))
 
-      const results = jobResultsStore.savedResults
-      const partyWallGroup = new THREE.Group()
-      partyWallGroup.name = 'party_walls'
-
-      for (const jobResult of results) {
-        const realResult = jobResult.results?.result
-
-        if (
-          !realResult ||
-          (cjStore.currentCollection.id !== realResult.processed_collection &&
-            realResult.processed_collection !== 'sent_collection')
-        ) {
-          continue
-        }
-
-        // Check for party_walls property
-        if (realResult.party_walls && Array.isArray(realResult.party_walls)) {
-          for (const partyWall of realResult.party_walls) {
-            // The surface is an array of [x, y, z] coordinates
-            let boundary: number[][] = partyWall.surface
-            if (!boundary || boundary.length < 3) continue
-
-            const wallVertices = new Float32Array(
-              boundary.flatMap(([x, y, z]) => {
-                const vector = new THREE.Vector3(
-                  x - epsgOrigin![0],
-                  y - epsgOrigin![1],
-                  z - originHeight!,
-                )
-                vector.applyMatrix4(rotationMatrix!)
-                return [vector.x, vector.y, vector.z]
-              }),
-            )
-
-            const indices = Array.from({ length: boundary.length }, (_, i) => i)
-            const triangleIndices = triangulatePolygon(indices, wallVertices)
-            if (triangleIndices.length === 0) continue
-
-            const geometry = new THREE.BufferGeometry()
-            geometry.setAttribute('position', new THREE.BufferAttribute(wallVertices, 3))
-            geometry.setIndex(triangleIndices)
-            geometry.computeVertexNormals()
-
-            const material = new THREE.MeshPhongMaterial({
-              color: 0xff0000,
-              side: THREE.DoubleSide,
-            })
-
-            const mesh = new THREE.Mesh(geometry, material)
-            partyWallGroup.add(mesh)
-          }
-        }
-      }
-      sceneGroup.add(partyWallGroup)
+      const partyWallGroup = buildPartyWallGroup()
+      if (partyWallGroup) sceneGroup.add(partyWallGroup)
 
       scene.add(sceneGroup)
       return scene
     },
 
     render(gl: WebGLRenderingContext, matrix) {
-      if (!this.renderer) return
-
-      const now = Date.now()
-      if (now - lastOriginUpdate > 500) {
-        const { origin, needsUpdate } = calculateOptimalOrigin(map!)
-        if (needsUpdate) {
-          updateSceneOrigin(map!, origin)
-          return
-        }
-      }
-
-      const epsgOriginWGS84 = mapStore.transformToWGS84(epsgOrigin!) as LngLatLike
-      const offsetFromCenterElevation = map!.queryTerrainElevation(epsgOriginWGS84) || 0
-      const sceneOriginMercator = maplibregl.MercatorCoordinate.fromLngLat(
-        mapStore.transformToWGS84(epsgOrigin!) as LngLatLike,
-        offsetFromCenterElevation,
-      )
-
-      const sceneTransform = {
-        translateX: sceneOriginMercator.x,
-        translateY: sceneOriginMercator.y,
-        translateZ: sceneOriginMercator.z,
-        scale: sceneOriginMercator.meterInMercatorCoordinateUnits(),
-      }
-
+      if (!this.renderer || !sceneAnchor) return
+      const scale = sceneAnchor.scale
+      const centerElevation = map?.transform.elevation ?? 0
       const projectionMatrix = new THREE.Matrix4().fromArray(matrix)
       const mercatorMatrix = new THREE.Matrix4()
-        .makeTranslation(
-          sceneTransform.translateX,
-          sceneTransform.translateY,
-          sceneTransform.translateZ,
-        )
-        .scale(new THREE.Vector3(sceneTransform.scale, -sceneTransform.scale, sceneTransform.scale))
+        .makeTranslation(sceneAnchor.mercX, sceneAnchor.mercY, -centerElevation * scale)
+        .scale(new THREE.Vector3(scale, -scale, scale))
 
       this.camera.projectionMatrix = projectionMatrix
         .multiply(mercatorMatrix)
@@ -1287,7 +1195,12 @@ const setup3DScene = async (): Promise<void> => {
     },
   }
 
-  map.once('idle', () => map!.addLayer(BoxCustomLayer as CustomLayerInterface))
+  const addModelLayer = (): void => {
+    if (!map || map.getLayer('3d-building-model')) return
+    map.addLayer(BoxCustomLayer as CustomLayerInterface)
+  }
+  if (map.isStyleLoaded()) addModelLayer()
+  else map.once('style.load', addModelLayer)
   map.on('click', (e) => {
     if (mapStore.activeOperation === null && BoxCustomLayer.raycast) {
       BoxCustomLayer.raycast(e.point, true)
@@ -1494,16 +1407,7 @@ const setupWatchers = (): void => {
     (newParameter) => {
       if (!isInitialized.value || !scene) return
       calculateParameterRange(newParameter)
-      const sceneGroup = scene.getObjectByName('$group')
-      if (sceneGroup) {
-        while (sceneGroup.children.length > 0) {
-          disposeObject(sceneGroup.children[0])
-        }
-        cjStore.cjFeatures.forEach((feature) => {
-          sceneGroup.add(featureGroupToThree(feature, cjStore.cjBase!))
-        })
-      }
-      map?.triggerRepaint()
+      rebuildSceneGroup()
     },
   )
 
@@ -1519,6 +1423,15 @@ const setupWatchers = (): void => {
       })
     },
     { immediate: true },
+  )
+
+  watchers.showHillshade = watch(
+    () => showHillshade.value,
+    (isVisible) => {
+      if (!map?.getLayer(HILLSHADE_LAYER_ID)) return
+      map.setLayoutProperty(HILLSHADE_LAYER_ID, 'visibility', isVisible ? 'visible' : 'none')
+      map.triggerRepaint()
+    },
   )
 
   // Watch for changes in additional info to update available parameters

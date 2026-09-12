@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Ref } from 'vue'
-import proj4 from 'proj4'
+import { getConverter, getProjectionDefinition, normalizeEpsg } from '@/utils/crs'
 import type { RGBAColor, MapSettings, SemanticColorsState } from '@/types/map'
 
 const SEMANTIC_COLORS_KEY = 'semantic-colors-settings'
@@ -75,20 +75,9 @@ export const useMapStore = defineStore('mapSettings', () => {
   }
 
   const transformCoordinates = (coords: number[], fromEPSG: string, toEPSG: string): number[] => {
-    transformationLoading.value = true
     lastError.value = null
     try {
-      const fromCode = fromEPSG.replace('EPSG:', '')
-      const toCode = toEPSG.replace('EPSG:', '')
-
-      const fromProjection = getProjectionDefinition(fromCode)
-      const toProjection = getProjectionDefinition(toCode)
-
-      if (!fromProjection || !toProjection) {
-        throw new Error(`Could not find definition for EPSG:${!fromProjection ? fromCode : toCode}`)
-      }
-
-      const result = proj4(fromProjection, toProjection, coords)
+      const result = getConverter(fromEPSG, toEPSG).forward([coords[0], coords[1]])
 
       if (!result || result.length < 2) throw new Error('Transformation failed')
 
@@ -96,22 +85,11 @@ export const useMapStore = defineStore('mapSettings', () => {
     } catch (error: unknown) {
       lastError.value = error instanceof Error ? error.message : String(error)
       throw error
-    } finally {
-      transformationLoading.value = false
     }
   }
 
-  const getProjectionDefinition = (epsgCode: string): string | null => {
-    const projectionDefs: Record<string, string> = {
-      '4326': '+proj=longlat +datum=WGS84 +no_defs',
-      '3857':
-        '+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs',
-      '7415':
-        '+proj=sterea +lat_0=52.1561605555556 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +units=m +vunits=m +no_defs +type=crs',
-      '5555': '+proj=utm +zone=32 +ellps=GRS80 +units=m +vunits=m +no_defs +type=crs',
-    }
-    return projectionDefs[epsgCode] || null
-  }
+  const isSupportedCRS = (epsgCode: string): boolean =>
+    getProjectionDefinition(epsgCode) !== null
 
   const transformToWGS84 = (
     coords: number[] | [number, number],
@@ -129,7 +107,7 @@ export const useMapStore = defineStore('mapSettings', () => {
   }
 
   const setCurrentCRS = (epsgCode: string): void => {
-    currentCRS.value = epsgCode.includes('EPSG:') ? epsgCode : `EPSG:${epsgCode}`
+    currentCRS.value = `EPSG:${normalizeEpsg(epsgCode)}`
   }
 
   return {
@@ -153,6 +131,7 @@ export const useMapStore = defineStore('mapSettings', () => {
     resetMapSettings,
     saveMapSettings,
     transformCoordinates,
+    isSupportedCRS,
     transformToWGS84,
     transformFromWGS84,
     setCurrentCRS,
