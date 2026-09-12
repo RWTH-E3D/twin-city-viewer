@@ -72,14 +72,30 @@
           <div class="grid gap-2 max-w-full">
             <template v-if="additionalInfo.properties">
               <div v-for="(value, name) in additionalInfo.properties" :key="name"
-                class="grid grid-cols-[120px_1fr] gap-2 items-center">
+                class="grid grid-cols-[120px_1fr_auto] gap-2 items-center">
                 <span class="text-sm font-medium text-blue-800 truncate" :title="String(name)">{{ name }}:</span>
-                <span class="text-sm text-blue-700 bg-white px-2 py-1 rounded border">{{ value }}</span>
+                <input type="text" :value="value"
+                  @input="updateAdditionalProperty(String(name), ($event.target as HTMLInputElement).value)"
+                  class="text-sm text-blue-700 bg-white px-2 py-1 rounded border focus:border-blue-500 focus:ring-blue-500 min-w-0" />
+                <button @click="removeAdditionalProperty(String(name))"
+                  class="text-red-500 rounded hover:bg-blue-100 px-2">
+                  ×
+                </button>
               </div>
             </template>
             <div v-if="!additionalInfo.properties || Object.keys(additionalInfo.properties).length === 0"
               class="text-sm text-blue-600 italic">
               No additional properties available
+            </div>
+            <!-- Add new additional property -->
+            <div class="grid grid-cols-[120px_1fr_auto] gap-2 items-center border-t border-blue-200 pt-2 mt-2">
+              <input type="text" v-model="newAdditionalPropertyName" placeholder="Name"
+                class="text-sm border rounded px-2 py-1 min-w-0 focus:border-blue-500 focus:ring-blue-500" />
+              <input type="text" v-model="newAdditionalPropertyValue" placeholder="Value"
+                class="text-sm border rounded px-2 py-1 min-w-0 focus:border-blue-500 focus:ring-blue-500" />
+              <button @click="addAdditionalProperty" class="text-green-500 rounded hover:bg-blue-100 px-2">
+                +
+              </button>
             </div>
           </div>
         </div>
@@ -160,7 +176,7 @@
         <h5 class="mb-2">Process Results</h5>
         <div v-for="proc in processResultsForObject" :key="proc.jobId" class="mb-2 p-2 bg-gray-50 rounded">
           <div class="flex items-center gap-2">
-            <span class="font-semibold">Process {{ proc.jobId.slice(-4) }}</span>
+            <span class="font-semibold">Process: {{ proc.jobId.slice(-9) }}</span>
             <span class="text-xs text-gray-500">Sum: {{ proc.sum.toLocaleString(undefined, { maximumFractionDigits: 2 })
               }}</span>
             <label class="ml-2 text-xs flex items-center gap-1">
@@ -231,17 +247,25 @@ interface ProcResultLine {
   sum: number
   raw_values: number[]
   visible: boolean
+  timeInfo?: {
+    startTime: number
+    stopTime: number
+    intervals: number
+    isHeatLoad: boolean
+  }
 }
 
 const processResultsForObject = ref<ProcResultLine[]>([])
 
 // On mount or when jobResultsStore.savedResults or cityObjectID changes, update processResultsForObject
 watch(
-  [() => jobResultsStore.savedResults, () => props.cityObjectID],
+  [() => jobResultsStore.savedResults, () => props.cityObjectID, () => props.featureID],
   () => {
     const results: ProcResultLine[] = []
     for (const jobResult of jobResultsStore.savedResults) {
       const jobId = jobResult.jobId || ''
+
+      // Handle regular process results (existing logic)
       const proc = jobResult.results?.result
       if (proc && proc.building_results && proc.building_results[props.cityObjectID]) {
         const bres = proc.building_results[props.cityObjectID]
@@ -252,6 +276,28 @@ watch(
             raw_values: bres.raw_values,
             visible: true,
           })
+        }
+      }
+
+      // Handle json-build-and-simulate heat load results
+      if (jobResult.processId === 'json-build-and-simulate' && jobResult.results?.heat_loads) {
+        const heatLoads = jobResult.results.heat_loads
+        if (heatLoads[props.featureID]) {
+          const heatLoadData = heatLoads[props.featureID]
+          if (heatLoadData.heat_load_series && typeof heatLoadData.heat_load_sum === 'number') {
+            results.push({
+              jobId: jobId + '_heat',
+              sum: heatLoadData.heat_load_sum,
+              raw_values: heatLoadData.heat_load_series,
+              visible: true,
+              timeInfo: {
+                startTime: heatLoadData.start_time || 0,
+                stopTime: heatLoadData.stop_time || 86400,
+                intervals: heatLoadData.intervals || 1440,
+                isHeatLoad: true
+              }
+            })
+          }
         }
       }
     }
@@ -291,57 +337,152 @@ const monthLabels = (() => {
   return labels.slice(0, 365)
 })()
 
+const generateTimeLabels = (timeInfo: ProcResultLine['timeInfo'], dataLength: number): string[] => {
+  if (!timeInfo) {
+    // Default to month labels for legacy data (365 days)
+    return monthLabels.slice(0, dataLength)
+  }
+
+  const { startTime, stopTime, intervals } = timeInfo
+  const totalDuration = Math.abs(stopTime - startTime) // in seconds
+  const timeStep = totalDuration / intervals // seconds per interval
+
+  const labels: string[] = []
+
+  // Determine appropriate label format based on time step
+  if (timeStep >= 86400) {
+    // Daily or longer intervals
+    for (let i = 0; i < dataLength; i++) {
+      const days = Math.floor(i * timeStep / 86400)
+      labels.push(`Day ${days + 1}`)
+    }
+  } else if (timeStep >= 3600) {
+    // Hourly intervals
+    for (let i = 0; i < dataLength; i++) {
+      const hours = Math.floor(i * timeStep / 3600)
+      const day = Math.floor(hours / 24) + 1
+      const hour = hours % 24
+      labels.push(`D${day} ${hour.toString().padStart(2, '0')}:00`)
+    }
+  } else {
+    // Sub-hourly intervals
+    for (let i = 0; i < dataLength; i++) {
+      const totalMinutes = Math.floor(i * timeStep / 60)
+      const hours = Math.floor(totalMinutes / 60)
+      const minutes = totalMinutes % 60
+      const day = Math.floor(hours / 24) + 1
+      const hourOfDay = hours % 24
+      labels.push(`D${day} ${hourOfDay.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`)
+    }
+  }
+
+  return labels
+}
+
 const anyProcessVisible = computed(() => processResultsForObject.value.some(p => p.visible))
 
 const chartData = computed(() => {
-  const datasets = processResultsForObject.value
-    .filter(p => p.visible)
-    .map((p, i) => ({
-      label: `Proc ${p.jobId.slice(-4)}`,
-      data: p.raw_values.slice(0, 365),
-      borderColor: colors[i % colors.length],
-      backgroundColor: colors[i % colors.length] + '33',
-      fill: false,
-      tension: 0.2,
-      pointRadius: 0,
-    }))
+  const visibleResults = processResultsForObject.value.filter(p => p.visible)
+
+  if (visibleResults.length === 0) {
+    return { labels: [], datasets: [] }
+  }
+
+  // Find the longest dataset to determine chart width
+  const maxLength = Math.max(...visibleResults.map(p => p.raw_values.length))
+
+  // Check if we have mixed data types (legacy + heat load)
+  const hasHeatLoad = visibleResults.some(p => p.timeInfo?.isHeatLoad)
+  const hasLegacy = visibleResults.some(p => !p.timeInfo?.isHeatLoad)
+
+  let labels: string[] = []
+
+  if (hasHeatLoad && !hasLegacy) {
+    // All heat load data - use the first heat load's time configuration
+    const heatLoadResult = visibleResults.find(p => p.timeInfo?.isHeatLoad)
+    labels = generateTimeLabels(heatLoadResult?.timeInfo, maxLength)
+  } else if (hasLegacy && !hasHeatLoad) {
+    // All legacy data - use month labels
+    labels = monthLabels.slice(0, maxLength)
+  } else {
+    // Mixed data - use generic time labels
+    labels = Array.from({ length: maxLength }, (_, i) => `Point ${i + 1}`)
+  }
+
+  const datasets = visibleResults.map((p, i) => ({
+    label: p.timeInfo?.isHeatLoad ? `Heat ${p.jobId.replace('_heat', '').slice(-4)}` : `Proc ${p.jobId.slice(-4)}`,
+    data: p.raw_values,
+    borderColor: colors[i % colors.length],
+    backgroundColor: colors[i % colors.length] + '33',
+    fill: false,
+    tension: 0.2,
+    pointRadius: 0,
+  }))
+
   return {
-    labels: monthLabels,
+    labels,
     datasets,
   }
 })
 
 
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { display: true },
-    title: { display: true, text: 'Daily Values' },
-    tooltip: { mode: 'index', intersect: false },
-  },
-  scales: {
-    x: {
-      title: { display: true, text: 'Month' },
-      ticks: {
-        callback: function (value: number, index: number, values: any) {
-          // Only show month label at the first day of each month
-          if (index === 0) return 'Jan'
-          const monthStartDays = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-          const found = monthStartDays.indexOf(index)
-          if (found !== -1) return monthNames[found]
-          return ''
-        },
-        maxRotation: 0,
-        minRotation: 0,
-        autoSkip: false,
-        font: { size: 12 },
-      },
+const chartOptions = computed(() => {
+  const visibleResults = processResultsForObject.value.filter(p => p.visible)
+  const hasHeatLoad = visibleResults.some(p => p.timeInfo?.isHeatLoad)
+  const hasLegacy = visibleResults.some(p => !p.timeInfo?.isHeatLoad)
+
+  let chartTitle = 'Process Results'
+  let xAxisTitle = 'Time'
+  let yAxisTitle = 'Values'
+
+  if (hasHeatLoad && !hasLegacy) {
+    chartTitle = 'Heat Load Values'
+    yAxisTitle = 'Heat Load (kWh)'
+    // Determine time scale from first heat load result
+    const heatLoadResult = visibleResults.find(p => p.timeInfo?.isHeatLoad)
+    if (heatLoadResult?.timeInfo) {
+      const timeStep = Math.abs(heatLoadResult.timeInfo.stopTime - heatLoadResult.timeInfo.startTime) / heatLoadResult.timeInfo.intervals
+      if (timeStep >= 86400) {
+        xAxisTitle = 'Days'
+      } else if (timeStep >= 3600) {
+        xAxisTitle = 'Hours'
+      } else {
+        xAxisTitle = 'Time Intervals'
+      }
+    }
+  } else if (hasLegacy && !hasHeatLoad) {
+    chartTitle = 'Daily Values'
+    xAxisTitle = 'Month'
+    yAxisTitle = 'Heating Load'
+  } else {
+    chartTitle = 'Mixed Process Results'
+    xAxisTitle = 'Data Points'
+    yAxisTitle = 'Values'
+  }
+
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: true },
+      title: { display: true, text: chartTitle },
+      tooltip: { mode: 'index', intersect: false },
     },
-    y: { title: { display: true, text: 'Heating Load' } },
-  },
-}
+    scales: {
+      x: {
+        title: { display: true, text: xAxisTitle },
+        ticks: {
+          maxRotation: 45,
+          minRotation: 0,
+          autoSkip: true,
+          maxTicksLimit: 20,
+          font: { size: 10 },
+        },
+      },
+      y: { title: { display: true, text: yAxisTitle } },
+    },
+  }
+})
 
 // Chart component
 const LineChart = defineComponent({
@@ -372,6 +513,8 @@ const showTransformControls = ref(false)
 const showGeometry = ref(false)
 const newAttributeName = ref('')
 const newAttributeValue = ref('')
+const newAdditionalPropertyName = ref('')
+const newAdditionalPropertyValue = ref('')
 
 const isMapRoute = computed(() => route.path === '/')
 
@@ -393,6 +536,57 @@ const removeAttribute = (name: string): void => {
   if (props.cityObject.attributes) {
     delete props.cityObject.attributes[name]
   }
+}
+
+const updateAdditionalProperty = (name: string, value: string): void => {
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info && info.properties) {
+    // Convert numeric strings to numbers if possible
+    const numericValue = !isNaN(Number(value)) && value.trim() !== '' ? Number(value) : value
+    info.properties[name] = numericValue
+  }
+}
+
+const removeAdditionalProperty = (name: string): void => {
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info && info.properties) {
+    delete info.properties[name]
+  }
+}
+
+const addAdditionalProperty = (): void => {
+  if (!newAdditionalPropertyName.value.trim()) return
+
+  const info = additionalInfoStore.getFeatureInfo(props.featureID)
+  if (info) {
+    if (!info.properties) {
+      info.properties = {}
+    }
+    // Convert numeric strings to numbers if possible
+    const numericValue = !isNaN(Number(newAdditionalPropertyValue.value)) && newAdditionalPropertyValue.value.trim() !== ''
+      ? Number(newAdditionalPropertyValue.value)
+      : newAdditionalPropertyValue.value
+    info.properties[newAdditionalPropertyName.value] = numericValue
+  } else {
+    // Create new additional info entry if it doesn't exist
+    const numericValue = !isNaN(Number(newAdditionalPropertyValue.value)) && newAdditionalPropertyValue.value.trim() !== ''
+      ? Number(newAdditionalPropertyValue.value)
+      : newAdditionalPropertyValue.value
+
+    const newFeatureInfo = {
+      type: 'Feature' as const,
+      id: props.featureID,
+      geometry: null,
+      properties: {
+        [newAdditionalPropertyName.value]: numericValue
+      },
+      links: []
+    }
+    additionalInfoStore.addFeatureInfo(newFeatureInfo)
+  }
+
+  newAdditionalPropertyName.value = ''
+  newAdditionalPropertyValue.value = ''
 }
 
 const calculateBounds = (): { center: [number, number, number] } => {

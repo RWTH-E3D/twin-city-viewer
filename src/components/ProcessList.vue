@@ -4,6 +4,7 @@ import { startProcess } from '@/utils/processApiUtils'
 import { useCjStore } from '@/stores/cjStore'
 import { multiSelStore } from '@/stores/selectionStore'
 import { useNotificationStore } from '@/stores/notificationStore'
+import { useAdditionalInfoStore } from '@/stores/additionalInfoStore'
 import type { Process, ProcessInputs } from '@/types/processes'
 
 interface JobStartResponse {
@@ -13,6 +14,7 @@ interface JobStartResponse {
 const cjStore = useCjStore()
 const mSelStore = multiSelStore()
 const notificationStore = useNotificationStore()
+const additionalInfoStore = useAdditionalInfoStore()
 
 const props = defineProps<{
   processes: Process[]
@@ -28,9 +30,71 @@ const inputData = ref<Record<string, any>>({})
 const error = ref<string>('')
 const success = ref<string>('')
 
+const createBuildingData = () => {
+  // Get selected features or all features if none selected
+  let selectedKeys = Object.keys(mSelStore.selFeatures)
+  let targetFeatures = cjStore.cjFeatures
+  if (selectedKeys.length > 0) {
+    targetFeatures = cjStore.cjFeatures.filter((f) => selectedKeys.includes(f.id))
+  }
+
+  const buildings: any[] = []
+  const missingDataFeatures: string[] = []
+
+  for (const feature of targetFeatures) {
+    const additionalInfo = additionalInfoStore.getFeatureInfo(feature.id)
+
+    if (!additionalInfo?.properties) {
+      missingDataFeatures.push(feature.id)
+      continue
+    }
+
+    const props = additionalInfo.properties
+
+    // Check if all required fields are present
+    const requiredFields = ['building_type', 'construction_year', 'floor_number', 'height', 'floor_area']
+    const missingFields = requiredFields.filter(field => !(field in props) || props[field] == null)
+
+    if (missingFields.length > 0) {
+      missingDataFeatures.push(feature.id)
+      continue
+    }
+
+    buildings.push({
+      name: feature.id,
+      function: "residential",
+      usage: props.building_type,
+      year: props.construction_year,
+      n_floors: props.floor_number,
+      height: props.height,
+      area: props.floor_area
+    })
+  }
+
+  return { buildings, missingDataFeatures }
+}
+
 const openProcessDialog = (process: Process) => {
   selectedProcess.value = process
-  if (process.inputs && process.inputs.properties) {
+
+  // Special handling for json-build-and-simulate process
+  if (process.id === 'json-build-and-simulate') {
+    const { buildings, missingDataFeatures } = createBuildingData()
+
+    if (missingDataFeatures.length > 0) {
+      error.value = `Missing additional data for features: ${missingDataFeatures.join(', ')}. These buildings will be excluded from the simulation.`
+    }
+
+    inputData.value = {
+      project_name: 'teaser_simulation',
+      start_time: 0,
+      stop_time: 86400,
+      intervals: 1440,
+      processes: 1,
+      retrofit: 'standard',
+      buildings: buildings
+    }
+  } else if (process.inputs && process.inputs.properties) {
     const initialData: Record<string, any> = {}
     Object.keys(process.inputs.properties).forEach((field) => {
       const schema = process.inputs?.properties[field]
@@ -57,7 +121,10 @@ const openProcessDialog = (process: Process) => {
   } else {
     inputData.value = {}
   }
-  error.value = ''
+
+  if (process.id !== 'json-build-and-simulate') {
+    error.value = ''
+  }
   success.value = ''
 }
 
@@ -66,19 +133,26 @@ const startJob = async () => {
   success.value = ''
   try {
     const processedInputs: Record<string, any> = {}
-    Object.entries(inputData.value).forEach(([key, value]) => {
-      if (
-        selectedProcess.value?.inputs?.properties[key]?.type === 'array' &&
-        typeof value === 'string'
-      ) {
-        processedInputs[key] = value
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean)
-      } else {
-        processedInputs[key] = value
-      }
-    })
+
+    // Special handling for json-build-and-simulate process - send data as-is
+    if (selectedProcess.value!.id === 'json-build-and-simulate') {
+      Object.assign(processedInputs, inputData.value)
+    } else {
+      // For other processes, apply the normal processing
+      Object.entries(inputData.value).forEach(([key, value]) => {
+        if (
+          selectedProcess.value?.inputs?.properties[key]?.type === 'array' &&
+          typeof value === 'string'
+        ) {
+          processedInputs[key] = value
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        } else {
+          processedInputs[key] = value
+        }
+      })
+    }
 
     const result = (await startProcess(
       selectedProcess.value!.id,
@@ -132,7 +206,71 @@ const startJob = async () => {
           <div v-if="success" class="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4">
             {{ success }}
           </div>
-          <div v-if="selectedProcess.inputs" class="space-y-4 mb-4">
+          <!-- Special form for json-build-and-simulate process -->
+          <div v-if="selectedProcess.id === 'json-build-and-simulate'" class="space-y-4 mb-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Project Name</label>
+              <input type="text" v-model="inputData.project_name" class="w-full border rounded px-3 py-2" />
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Start Time (seconds)</label>
+                <input type="number" v-model="inputData.start_time" class="w-full border rounded px-3 py-2" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Stop Time (seconds)</label>
+                <input type="number" v-model="inputData.stop_time" class="w-full border rounded px-3 py-2" />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Intervals</label>
+                <input type="number" v-model="inputData.intervals" class="w-full border rounded px-3 py-2" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Processes</label>
+                <input type="number" v-model="inputData.processes" class="w-full border rounded px-3 py-2" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Retrofit Type</label>
+              <select v-model="inputData.retrofit" class="w-full border rounded px-3 py-2">
+                <option value="standard">Standard</option>
+                <option value="retrofit">Retrofit</option>
+                <option value="adv_retrofit">Retrofit Advanced</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                Buildings ({{ inputData.buildings?.length || 0 }} buildings will be included)
+              </label>
+              <div class="max-h-60 overflow-y-auto border rounded p-2 bg-gray-50">
+                <div v-if="inputData.buildings && inputData.buildings.length > 0" class="space-y-2">
+                  <div v-for="(building, index) in inputData.buildings" :key="index"
+                    class="p-2 bg-white rounded border text-sm">
+                    <div class="font-medium">{{ building.name }}</div>
+                    <div class="text-gray-600 text-xs grid grid-cols-2 gap-1">
+                      <span>Function: {{ building.function }}</span>
+                      <span>Year: {{ building.year }}</span>
+                      <span>Floors: {{ building.n_floors }}</span>
+                      <span>Height: {{ building.height }}m</span>
+                      <span>Area: {{ building.area }}m²</span>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="text-gray-500 text-sm py-4 text-center">
+                  No buildings with complete additional data found
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Default form for other processes -->
+          <div v-else-if="selectedProcess.inputs" class="space-y-4 mb-4">
             <div v-for="(schema, field) in selectedProcess.inputs.properties" :key="field">
               <label class="block text-sm font-medium text-gray-700 mb-1">
                 {{ schema.description || field }}

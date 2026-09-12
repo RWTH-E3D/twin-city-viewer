@@ -95,7 +95,7 @@ const formatDateUTC = (dateString: string): string => {
 const viewResults = async (job: Job): Promise<void> => {
   if (job.status !== 'successful') return
   try {
-    const results = await getJobResults(job.jobID, props.baseURL)
+    const results = await getJobResults(job.jobID, props.baseURL, job.processID)
     selectedJob.value = { ...job, results }
   } catch (e) {
     error.value = 'Failed to load job results'
@@ -112,7 +112,7 @@ const handleCancel = async (jobId: string): Promise<void> => {
 
 const saveResult = async (job: Job): Promise<void> => {
   try {
-    const results = await getJobResults(job.jobID, props.baseURL)
+    const results = await getJobResults(job.jobID, props.baseURL, job.processID)
     jobResultsStore.saveJobResult(job.jobID, job.processID, results)
   } catch (e) {
     error.value = 'Failed to save job results'
@@ -132,6 +132,33 @@ const getStatusColor = (status: JobStatusType): string => {
     dismissed: 'text-gray-500',
   }
   return colorMap[status] || 'text-gray-600'
+}
+
+const formatResultsForDisplay = (job: Job & { results?: any }): string => {
+  if (!job.results) return 'No results available'
+
+  // Special formatting for json-build-and-simulate process
+  if (job.processID === 'json-build-and-simulate' && job.results.heat_loads) {
+    const heatLoads = job.results.heat_loads
+    let formatted = 'Heat Load Results:\n\n'
+
+    for (const [buildingId, data] of Object.entries(heatLoads)) {
+      const buildingData = data as any
+      formatted += `Building: ${buildingId}\n`
+      formatted += `  Total Heat Load: ${buildingData.heat_load_sum} ${buildingData.heat_load_sum_unit}\n`
+      formatted += `  Time Series Length: ${buildingData.heat_load_series?.length || 0} values\n`
+      formatted += `  Unit: ${buildingData.heat_load_series_unit}\n`
+      if (buildingData.heat_load_series && buildingData.heat_load_series.length > 0) {
+        formatted += `  Sample Values: ${buildingData.heat_load_series.slice(0, 5).join(', ')}${buildingData.heat_load_series.length > 5 ? ', ...' : ''}\n`
+      }
+      formatted += '\n'
+    }
+
+    return formatted
+  }
+
+  // Default JSON formatting for other processes
+  return JSON.stringify(job.results, null, 2)
 }
 </script>
 
@@ -218,7 +245,7 @@ const getStatusColor = (status: JobStatusType): string => {
         <h3 class="text-lg font-semibold mb-4">Results for {{ selectedJob.processID }}</h3>
 
         <pre class="bg-gray-50 p-4 rounded overflow-auto max-h-96">
-          {{ JSON.stringify(selectedJob.results, null, 2) }}
+          {{ formatResultsForDisplay(selectedJob) }}
         </pre>
 
         <div class="flex justify-end mt-4 space-x-2">

@@ -7,7 +7,7 @@ import { useNotificationStore } from '@/stores/notificationStore'
 import { useMapStore } from '@/stores/mapStore'
 import { useAdditionalInfoStore } from '@/stores/additionalInfoStore'
 
-import { validateUrl, loadDataFromApi, fetchCollections, calculateBbox } from '@/utils/apiUtils'
+import { validateUrl, loadDataFromApi, fetchCollections, ensureGeographicalExtent } from '@/utils/apiUtils'
 import {
   isValidCityJSONSeqFile,
   processFileStream,
@@ -89,7 +89,7 @@ const handleFileSelection = async (file: File): Promise<void> => {
 
   try {
     const { base, features } = await processFileStream(file)
-    base.metadata!.geographicalExtent = calculateBbox(features, base)
+    ensureGeographicalExtent(base, features)
     updateStoreData(file, base, features)
     notificationStore.show('Successfully loaded file', 'success')
   } catch (err: unknown) {
