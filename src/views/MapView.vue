@@ -2,12 +2,19 @@
 import { onMounted, onUnmounted, watch, ref, computed } from 'vue'
 import type { ComputedRef } from 'vue'
 import type { Ref } from 'vue'
-import maplibregl from 'maplibre-gl'
-import type { Map, CustomLayerInterface, LngLat, LayerSpecification } from 'maplibre-gl'
+import * as maplibregl from 'maplibre-gl'
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
+import type {
+  Map,
+  CustomLayerInterface,
+  CustomRenderMethodInput,
+  LngLat,
+  LayerSpecification,
+} from 'maplibre-gl'
 import * as THREE from 'three'
 import earcut from 'earcut'
 import { v5 as uuidv5 } from 'uuid'
-import MaplibreTerradrawControl from '@watergis/maplibre-gl-terradraw'
+import { MaplibreTerradrawControl } from '@watergis/maplibre-gl-terradraw'
 
 import Modal from '@/components/Modal.vue'
 import { createFeatureWithGeometry } from '@/utils/buildingCreation'
@@ -31,6 +38,8 @@ import type {
 } from '@/types/mapView'
 import type { Coordinate } from '@/utils/coordinateHandling'
 import type { Shell, MultiSurfaceGeom, SolidGeom, MultiSolidGeom } from '@/types/geoms'
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 const NAMESPACE = uuidv5('twin-city', uuidv5.DNS)
 const showModal = ref<boolean>(false)
@@ -360,7 +369,7 @@ const changeMapOperation = (): void => {
         addToSelectionByCoordinateList(coordinates)
       }
     })
-  } else if (mapStore.activeOperation === 'Add') {
+  } else if (mapStore.activeOperation === 'Add' && drawInstance) {
     drawInstance.on('finish', async (id) => {
       if (!map) return
       const snapshot = drawInstance!.getSnapshot()
@@ -984,7 +993,7 @@ const setup3DScene = async (): Promise<void> => {
     zoom: 16.27,
     pitch: 30,
     bearing: -28.5,
-    antialias: true,
+    canvasContextAttributes: { antialias: true },
     style: customStyle,
     maxZoom: 20,
     maxPitch: 85,
@@ -1144,13 +1153,14 @@ const setup3DScene = async (): Promise<void> => {
       return scene
     },
 
-    render(gl: WebGLRenderingContext, matrix) {
+    render(gl: WebGL2RenderingContext, options: CustomRenderMethodInput) {
       if (!this.renderer || !sceneAnchor) return
       const scale = sceneAnchor.scale
-      const centerElevation = map?.transform.elevation ?? 0
-      const projectionMatrix = new THREE.Matrix4().fromArray(matrix)
+      const projectionMatrix = new THREE.Matrix4().fromArray(
+        options.defaultProjectionData.mainMatrix as ArrayLike<number>,
+      )
       const mercatorMatrix = new THREE.Matrix4()
-        .makeTranslation(sceneAnchor.mercX, sceneAnchor.mercY, -centerElevation * scale)
+        .makeTranslation(sceneAnchor.mercX, sceneAnchor.mercY, 0)
         .scale(new THREE.Vector3(scale, -scale, scale))
 
       this.camera.projectionMatrix = projectionMatrix
@@ -1166,8 +1176,8 @@ const setup3DScene = async (): Promise<void> => {
 
     raycast(point: { x: number; y: number }, isClick?: boolean) {
       const mouse = new THREE.Vector2(
-        (point.x / map!.transform.width) * 2 - 1,
-        1 - (point.y / map!.transform.height) * 2,
+        (point.x / map!.getCanvas().clientWidth) * 2 - 1,
+        1 - (point.y / map!.getCanvas().clientHeight) * 2,
       )
       const camInverseProjection = new THREE.Matrix4().copy(this.camera.projectionMatrix).invert()
       const cameraPosition = new THREE.Vector3().applyMatrix4(camInverseProjection)
