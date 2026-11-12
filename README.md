@@ -1,5 +1,5 @@
 # TwinCityViewer
-
+![](img/TwinCityViewer-reiter.jpg)
 TwinCityViewer is a web-based visualization and editing tool for 3D city models in the [CityJSONSeq format](https://www.cityjson.org/cityjsonseq/). It provides an intuitive interface for working with district-scale urban digital twins, supporting both visualization and interactive editing capabilities. While it can work with any OGC API Features compliant endpoint, it is designed to work seamlessly with [TwinCityAPI](https://github.com/RWTH-E3D/twin-city-api) for enhanced functionality.
 
 ![](img/ui.jpg)
